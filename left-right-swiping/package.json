@@ -1,0 +1,38 @@
+{
+    "name": "air-gesture-refactor",
+    "displayName": "Air Gesture Refactoring",
+    "description": "Control VS Code with hand gestures via webcam.",
+    "version": "0.1.0",
+    "publisher": "antigravity",
+    "engines": {
+        "vscode": "^1.80.0"
+    },
+    "categories": [
+        "Other"
+    ],
+    "activationEvents": [
+        "*"
+    ],
+    "main": "./extension.js",
+    "contributes": {
+        "commands": [
+            {
+                "command": "air-gesture.start",
+                "title": "Air Gesture: Start Detection"
+            },
+            {
+                "command": "air-gesture.stop",
+                "title": "Air Gesture: Stop Detection"
+            }
+        ]
+    },
+    "scripts": {
+        "compile": "tsc -p ./",
+        "watch": "tsc -watch -p ./"
+    },
+    "devDependencies": {
+        "@types/vscode": "^1.80.0",
+        "@types/node": "^16.11.7",
+        "typescript": "^4.5.2"
+    }
+}
