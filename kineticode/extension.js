@@ -8,7 +8,7 @@ let originalFontSize = 14;
 let activeMode = null;
 
 function activate(context) {
-    console.log('Air Gesture Extension is now active!');
+    console.log('Kineticode Extension is now active!');
 
     mainStatusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
     mainStatusBarItem.show();
@@ -18,24 +18,11 @@ function activate(context) {
         showModePicker(context);
     });
 
-    const startHandCommand = vscode.commands.registerCommand('air-gesture.startHand', () => {
-        startDetection(context, 'hand');
-    });
-
-    const startPostureCommand = vscode.commands.registerCommand('air-gesture.startPosture', () => {
-        startDetection(context, 'posture');
-    });
-
-    const startDualCommand = vscode.commands.registerCommand('air-gesture.startDual', () => {
-        startDetection(context, 'dual');
-    });
-
-
     const stopCommand = vscode.commands.registerCommand('air-gesture.stop', () => {
         stopDetection();
     });
 
-    context.subscriptions.push(selectModeCommand, startHandCommand, startPostureCommand, startDualCommand, stopCommand, mainStatusBarItem);
+    context.subscriptions.push(selectModeCommand, stopCommand, mainStatusBarItem);
 }
 
 function showModePicker(context) {
@@ -45,16 +32,20 @@ function showModePicker(context) {
     }
 
     const items = [
-        { label: "$(rocket) Dual Control", description: "Hand Gestures + Posture", id: 'dual' },
-        { label: "$(hand) Hand Control", description: "Zone-based tab navigation", id: 'hand' },
-        { label: "$(person) Posture Control", description: "Font scaling based on posture", id: 'posture' }
+        { label: "$(hand) Hand Control", description: "Tab navigation via swipes", id: 'hand' },
+        { label: "$(person) Posture Control", description: "Font scaling via posture", id: 'posture' },
+        { label: "$(eye) Face Control", description: "Wink to add a new tab", id: 'face' }
     ];
 
-    vscode.window.showQuickPick(items, { placeHolder: 'Select Air Control Mode' }).then(async selection => {
-        if (selection) {
+    vscode.window.showQuickPick(items, {
+        placeHolder: 'Select Kineticode Engines to Enable (Space to toggle)',
+        canPickMany: true
+    }).then(async selections => {
+        if (selections && selections.length > 0) {
             const ready = await checkDependencies();
             if (ready) {
-                startDetection(context, selection.id);
+                const modes = selections.map(s => s.id);
+                startDetection(context, modes);
             }
         }
     });
@@ -65,7 +56,7 @@ async function checkDependencies() {
     return new Promise((resolve) => {
         const check = spawn(pythonCommand, ['-c', 'import cv2, mediapipe, pyautogui, numpy; print("READY")']);
         check.on('error', () => {
-            vscode.window.showErrorMessage("Python 3 not found! Please install Python to use Air Gesture.", "Download Python").then(selection => {
+            vscode.window.showErrorMessage("Python 3 not found! Please install Python to use Kineticode.", "Download Python").then(selection => {
                 if (selection === "Download Python") vscode.env.openExternal(vscode.Uri.parse("https://www.python.org/downloads/"));
             });
             resolve(false);
@@ -91,34 +82,28 @@ async function checkDependencies() {
     });
 }
 
-function startDetection(context, mode) {
+function startDetection(context, modes) {
     if (childProcess) {
         stopDetection();
     }
 
-    activeMode = mode;
-    let scriptName;
-    if (mode === 'hand') scriptName = 'gesture_engine.py';
-    else if (mode === 'posture') scriptName = 'posture_engine.py';
-    else scriptName = 'unified_engine.py';
-
-    const scriptPath = path.join(context.extensionPath, scriptName);
+    activeMode = modes.join(' + ');
+    const scriptPath = path.join(context.extensionPath, 'unified_engine.py');
     const pythonCommand = process.platform === 'win32' ? 'python' : 'python3';
 
-    if (mode === 'posture' || mode === 'dual') {
+    if (modes.includes('posture')) {
         originalFontSize = vscode.workspace.getConfiguration('editor').get('fontSize');
     }
 
     const config = vscode.workspace.getConfiguration('airGesture');
     const debug = config.get('debugWindow', true);
-    const snapThreshold = config.get('snapThreshold', 0.05);
 
-    childProcess = spawn(pythonCommand, [
-        scriptPath,
-        '--extension',
-        '--debug', debug.toString(),
-        '--snap_threshold', snapThreshold.toString()
-    ], {
+    const args = [scriptPath, '--extension', '--debug', debug.toString()];
+    if (modes.includes('hand')) args.push('--hands');
+    if (modes.includes('posture')) args.push('--posture');
+    if (modes.includes('face')) args.push('--face');
+
+    childProcess = spawn(pythonCommand, args, {
         cwd: context.extensionPath
     });
 
@@ -132,14 +117,8 @@ function startDetection(context, mode) {
             if (line.trim()) {
                 try {
                     const message = JSON.parse(line);
-                    if (mode === 'dual') {
-                        handleGesture(message);
-                        handlePosture(message);
-                    } else if (mode === 'hand') {
-                        handleGesture(message);
-                    } else if (mode === 'posture') {
-                        handlePosture(message);
-                    }
+                    handleGesture(message);
+                    handlePosture(message);
                 } catch (e) { }
             }
         }
@@ -155,7 +134,7 @@ function stopDetection() {
         childProcess = null;
     }
 
-    if (activeMode === 'posture' || activeMode === 'dual') {
+    if (activeMode && activeMode.includes('POSTURE')) {
         vscode.workspace.getConfiguration('editor').update('fontSize', originalFontSize, vscode.ConfigurationTarget.Global);
     }
 
@@ -165,11 +144,11 @@ function stopDetection() {
 
 function updateStatusBar() {
     if (activeMode) {
-        mainStatusBarItem.text = `$(circle-filled) Air ${activeMode.toUpperCase()}: On (Stop)`;
+        mainStatusBarItem.text = `$(circle-filled) Kineticode ${activeMode.toUpperCase()}: On (Stop)`;
         mainStatusBarItem.command = 'air-gesture.stop';
         mainStatusBarItem.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
     } else {
-        mainStatusBarItem.text = `$(broadcast) Air Control: Select Mode`;
+        mainStatusBarItem.text = `$(broadcast) Kineticode: Select Mode`;
         mainStatusBarItem.command = 'air-gesture.selectMode';
         mainStatusBarItem.backgroundColor = undefined;
     }
@@ -179,7 +158,7 @@ function handleGesture(message) {
     if (!message || !message.gesture) return;
     if (message.gesture === 'swipe_left') vscode.commands.executeCommand('workbench.action.previousEditor');
     else if (message.gesture === 'swipe_right') vscode.commands.executeCommand('workbench.action.nextEditor');
-    else if (message.gesture === 'snap') vscode.commands.executeCommand('workbench.action.files.newUntitledFile');
+    else if (message.gesture === 'clap') vscode.commands.executeCommand('workbench.action.files.newUntitledFile');
 }
 
 async function handlePosture(message) {
