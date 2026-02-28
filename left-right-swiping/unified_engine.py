@@ -39,7 +39,13 @@ pose_landmarker = vision.PoseLandmarker.create_from_options(pose_options)
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--extension', action='store_true')
+    parser.add_argument('--debug', type=str, choices=['true', 'false'], default='true')
+    parser.add_argument('--snap_threshold', type=float, default=0.05)
     args = parser.parse_args()
+
+    global DEBUG_WINDOW
+    DEBUG_WINDOW = args.debug == 'true'
+    # For unified_engine, we use the literal value in the loop, so we should use args.snap_threshold there.
 
     cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
     
@@ -136,9 +142,9 @@ def main():
                 middle_tip = hl[12]
                 dist = ((thumb_tip.x - middle_tip.x)**2 + (thumb_tip.y - middle_tip.y)**2)**0.5
                 
-                if dist < 0.05: # SNAP_THRESHOLD
+                if dist < args.snap_threshold: # SNAP_THRESHOLD
                     snap_prepared = True
-                elif snap_prepared and dist > 0.1:
+                elif snap_prepared and dist > args.snap_threshold * 2:
                     if time.time() - last_snap_time > 1.0: # SNAP_COOLDOWN
                         if args.extension:
                             print(json.dumps({"gesture": "snap"}), flush=True)

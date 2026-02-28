@@ -50,10 +50,44 @@ function showModePicker(context) {
         { label: "$(person) Posture Control", description: "Font scaling based on posture", id: 'posture' }
     ];
 
-    vscode.window.showQuickPick(items, { placeHolder: 'Select Air Control Mode' }).then(selection => {
+    vscode.window.showQuickPick(items, { placeHolder: 'Select Air Control Mode' }).then(async selection => {
         if (selection) {
-            startDetection(context, selection.id);
+            const ready = await checkDependencies();
+            if (ready) {
+                startDetection(context, selection.id);
+            }
         }
+    });
+}
+
+async function checkDependencies() {
+    const pythonCommand = process.platform === 'win32' ? 'python' : 'python3';
+    return new Promise((resolve) => {
+        const check = spawn(pythonCommand, ['-c', 'import cv2, mediapipe, pyautogui, numpy; print("READY")']);
+        check.on('error', () => {
+            vscode.window.showErrorMessage("Python 3 not found! Please install Python to use Air Gesture.", "Download Python").then(selection => {
+                if (selection === "Download Python") vscode.env.openExternal(vscode.Uri.parse("https://www.python.org/downloads/"));
+            });
+            resolve(false);
+        });
+
+        let output = '';
+        check.stdout.on('data', (data) => output += data.toString());
+        check.on('close', (code) => {
+            if (code === 0 && output.includes("READY")) {
+                resolve(true);
+            } else {
+                vscode.window.showErrorMessage("Missing Python dependencies (opencv, mediapipe, etc.). Install them now?", "Install", "Cancel").then(selection => {
+                    if (selection === "Install") {
+                        const terminal = vscode.window.createTerminal("Air Gesture Install");
+                        terminal.show();
+                        terminal.sendText(`${pythonCommand} -m pip install opencv-python mediapipe pyautogui numpy`);
+                        vscode.window.showInformationMessage("Installing dependencies... Please restart the mode once finished.");
+                    }
+                });
+                resolve(false);
+            }
+        });
     });
 }
 
@@ -75,7 +109,16 @@ function startDetection(context, mode) {
         originalFontSize = vscode.workspace.getConfiguration('editor').get('fontSize');
     }
 
-    childProcess = spawn(pythonCommand, [scriptPath, '--extension'], {
+    const config = vscode.workspace.getConfiguration('airGesture');
+    const debug = config.get('debugWindow', true);
+    const snapThreshold = config.get('snapThreshold', 0.05);
+
+    childProcess = spawn(pythonCommand, [
+        scriptPath,
+        '--extension',
+        '--debug', debug.toString(),
+        '--snap_threshold', snapThreshold.toString()
+    ], {
         cwd: context.extensionPath
     });
 

@@ -59,7 +59,13 @@ def trigger_action(gesture, use_extension=False):
 def main():
     parser = argparse.ArgumentParser(description='Air Gesture Engine')
     parser.add_argument('--extension', action='store_true', help='Run in extension mode (JSON output)')
+    parser.add_argument('--debug', type=str, choices=['true', 'false'], default='true', help='Show debug window')
+    parser.add_argument('--snap_threshold', type=float, default=0.05, help='Snap detection threshold')
     args = parser.parse_args()
+
+    global DEBUG_WINDOW, SNAP_THRESHOLD
+    DEBUG_WINDOW = args.debug == 'true'
+    SNAP_THRESHOLD = args.snap_threshold
 
     # Use cv2.CAP_DSHOW for faster initialization on Windows
     cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)

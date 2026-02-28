@@ -34,7 +34,11 @@ landmarker = vision.PoseLandmarker.create_from_options(options)
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--extension', action='store_true')
+    parser.add_argument('--debug', type=str, choices=['true', 'false'], default='true')
     args = parser.parse_args()
+
+    global DEBUG_WINDOW
+    DEBUG_WINDOW = args.debug == 'true'
 
     cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
     

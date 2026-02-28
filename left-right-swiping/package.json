@@ -3,12 +3,25 @@
     "displayName": "Air Gesture Control",
     "description": "Control VS Code with hand gestures and posture monitoring.",
     "version": "0.1.0",
-    "publisher": "antigravity",
+    "publisher": "USER_FIXME",
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/USER_FIXME/air-gesture-control"
+    },
+    "icon": "icon.png",
     "engines": {
         "vscode": "^1.80.0"
     },
     "categories": [
-        "Other"
+        "Other",
+        "Machine Learning"
+    ],
+    "keywords": [
+        "gesture",
+        "posture",
+        "camera",
+        "mediapipe",
+        "automation"
     ],
     "activationEvents": [
         "*"
@@ -36,7 +49,22 @@
                 "command": "air-gesture.stop",
                 "title": "Air Gesture: Stop Detection"
             }
-        ]
+        ],
+        "configuration": {
+            "title": "Air Gesture Control",
+            "properties": {
+                "airGesture.debugWindow": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Show/hide the camera preview and tracking visualizers."
+                },
+                "airGesture.snapThreshold": {
+                    "type": "number",
+                    "default": 0.05,
+                    "description": "Distance threshold for detecting a pinch (part of the snap gesture)."
+                }
+            }
+        }
     },
     "scripts": {
         "compile": "tsc -p ./",
