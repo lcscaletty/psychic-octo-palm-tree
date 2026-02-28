@@ -98,16 +98,11 @@ function handleGesture(message) {
     console.log(`Received Gesture: ${message.gesture}`);
 
     if (message.gesture === 'swipe_left') {
-        vscode.window.setStatusBarMessage('Gesture: Swipe Left', 2000);
-        // Ensure focus is in the editor group before switching
-        vscode.commands.executeCommand('workbench.action.focusActiveEditorGroup').then(() => {
-            vscode.commands.executeCommand('workbench.action.previousEditorInGroup');
-        });
+        vscode.window.setStatusBarMessage('Gesture: Swipe Left', 1000);
+        vscode.commands.executeCommand('workbench.action.previousEditor');
     } else if (message.gesture === 'swipe_right') {
-        vscode.window.setStatusBarMessage('Gesture: Swipe Right', 2000);
-        vscode.commands.executeCommand('workbench.action.focusActiveEditorGroup').then(() => {
-            vscode.commands.executeCommand('workbench.action.nextEditorInGroup');
-        });
+        vscode.window.setStatusBarMessage('Gesture: Swipe Right', 1000);
+        vscode.commands.executeCommand('workbench.action.nextEditor');
     } else if (message.gesture === 'fist') {
         vscode.window.setStatusBarMessage('Gesture: Save', 2000);
         vscode.commands.executeCommand('workbench.action.files.save');

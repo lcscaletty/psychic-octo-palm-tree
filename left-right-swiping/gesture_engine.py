@@ -12,8 +12,8 @@ import argparse
 # --- Configuration ---
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 MODEL_PATH = os.path.join(SCRIPT_DIR, 'hand_landmarker.task')
-COOLDOWN = 1.0  # Seconds between events
-SWIPE_THRESHOLD = 0.15
+COOLDOWN = 0.6  # Seconds between events
+SWIPE_THRESHOLD = 0.12
 DEBUG_WINDOW = True # Show the camera feed
 
 # --- PyAutoGUI Safety Settings ---
@@ -58,8 +58,6 @@ def get_gesture(hand_landmarks):
             
     if sum(fingers) == 0:
         return "fist"
-    elif sum(fingers) >= 4:
-        return "palm"
     return None
 
 def trigger_action(gesture, use_extension=False):
@@ -78,8 +76,6 @@ def trigger_action(gesture, use_extension=False):
             pyautogui.hotkey('ctrl', 'pagedown')
         elif gesture == "fist":
             pyautogui.hotkey('ctrl', 's')
-        elif gesture == "palm":
-            pass
 
 def main():
     parser = argparse.ArgumentParser(description='Air Gesture Engine')
@@ -95,16 +91,17 @@ def main():
 
     prev_gesture = None
     last_event_time = 0
-    prev_index_x = None
+    swipe_start_x = None
+    SWIPE_DISTANCE_THRESHOLD = 0.15 # Reduced for better sensitivity
     
     if args.extension:
         print(json.dumps({"status": "ready"}), flush=True)
     else:
         print("--- Air Gesture Control: Standalone Mode ---")
         print("Commands:")
-        print(" - Swipe Left: Ctrl + PgUp")
-        print(" - Swipe Right: Ctrl + PgDn")
-        print(" - Fist: Ctrl + S (Save)")
+        print(" - Swipe Left (Inwards): Next Tab")
+        print(" - Swipe Right (Outwards): Previous Tab")
+        print(" - Fist: Save File")
         print("Press 'ESC' in the window or 'Q' in terminal to quit.")
 
     # Create window before starting loop
@@ -116,6 +113,7 @@ def main():
         if not success:
             continue
 
+        h, w, _ = image.shape
         image = cv2.flip(image, 1) # Mirror
         image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
         mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=image_rgb)
@@ -123,26 +121,52 @@ def main():
         results = landmarker.detect(mp_image)
         current_gesture = None
         status_text = "Tracking..."
+        box_color = (255, 0, 0) # Blue (Idle)
 
         if results.hand_landmarks:
             for hand_landmarks in results.hand_landmarks:
                 current_gesture = get_gesture(hand_landmarks)
                 
-                # Swipe detection
-                index_x = hand_landmarks[8].x
-                if prev_index_x is not None:
-                    diff = index_x - prev_index_x
-                    if diff > SWIPE_THRESHOLD:
-                        current_gesture = "swipe_right"
-                    elif diff < -SWIPE_THRESHOLD:
-                        current_gesture = "swipe_left"
-                prev_index_x = index_x
+                # Bounding Box Calculation
+                x_coords = [lm.x for lm in hand_landmarks]
+                y_coords = [lm.y for lm in hand_landmarks]
+                min_x, max_x = min(x_coords), max(x_coords)
+                min_y, max_y = min(y_coords), max(y_coords)
                 
-                # Draw visual feedback on image
-                if current_gesture:
-                    status_text = f"Gesture: {current_gesture.upper()}"
-                    cv2.putText(image, status_text, (50, 50), 
-                                cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+                # Robust Swipe detection
+                index_x = hand_landmarks[8].x # Index finger tip X (0 to 1)
+                
+                if time.time() - last_event_time < COOLDOWN:
+                    swipe_start_x = None
+                    box_color = (0, 255, 0) # Green (Just triggered/Cooldown)
+                else:
+                    if swipe_start_x is None:
+                        swipe_start_x = index_x
+                    else:
+                        diff = index_x - swipe_start_x
+                        # Change color if moving significant distance
+                        if abs(diff) > 0.05:
+                            box_color = (0, 255, 255) # Yellow (Moving)
+                            
+                        if diff > SWIPE_DISTANCE_THRESHOLD:
+                            current_gesture = "swipe_right"
+                            swipe_start_x = None
+                        elif diff < -SWIPE_DISTANCE_THRESHOLD:
+                            current_gesture = "swipe_left"
+                            swipe_start_x = None
+                
+                # Draw visual feedback
+                if DEBUG_WINDOW:
+                    # Draw Bounding Box
+                    cv2.rectangle(image, 
+                                  (int(min_x * w), int(min_y * h)), 
+                                  (int(max_x * w), int(max_y * h)), 
+                                  box_color, 2)
+                    
+                    if current_gesture:
+                        status_text = f"Gesture: {current_gesture.upper()}"
+                        cv2.putText(image, status_text, (50, 50), 
+                                    cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
 
         # Trigger Action
         if current_gesture and current_gesture != prev_gesture:
