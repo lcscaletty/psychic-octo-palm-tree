@@ -241,9 +241,11 @@ function handlePushTrigger(message) {
     let triggered = false;
 
     if (trigger === 'physical_push' && message.action === 'git_push') {
-        // The push_engine.py already performs the git push internally, 
-        // but we can show a notification here.
-        vscode.window.showInformationMessage('🚀 Push Detected: Git Push sequence triggered!');
+        if (message.success) {
+            vscode.window.showInformationMessage('🚀 Push Successful: Your code is safe on GitHub!');
+        } else {
+            vscode.window.showErrorMessage('❌ Git Push Failed! Check the Debug Console for details.');
+        }
         triggered = true;
     } else if (message.gesture === trigger) {
         triggered = true;

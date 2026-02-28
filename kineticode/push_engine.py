@@ -51,20 +51,44 @@ def perform_git_push():
     """
     Executes the git sequence to push current changes to GitHub.
     """
-    print("\n--- DETECTED PUSH: TRIGGERING GIT PUSH ---")
+    print("\n--- ATTEMPTING GIT PUSH ---", flush=True)
     try:
-        # 1. Add all changes
-        subprocess.run(["git", "add", "."], check=True)
-        # 2. Commit with a timestamp
+        # 1. Find git root
+        root_res = subprocess.run(["git", "rev-parse", "--show-toplevel"], 
+                               capture_output=True, text=True, check=True)
+        git_root = root_res.stdout.strip()
+        print(f"Detected Git Root: {git_root}", flush=True)
+        
+        # 2. Add changes
+        print("Running: git add .", flush=True)
+        subprocess.run(["git", "add", "."], cwd=git_root, check=True)
+        
+        # 3. Check status (is there anything to commit?)
+        status_res = subprocess.run(["git", "status", "--porcelain"], 
+                                 cwd=git_root, capture_output=True, text=True, check=True)
+        if not status_res.stdout.strip():
+            print("--- NOTHING TO COMMIT: Skipping push ---", flush=True)
+            return True # Success (nothing needed)
+
+        # 4. Commit
         commit_msg = f"Auto-push from Kineticode Push Engine: {time.strftime('%Y-%m-%d %H:%M:%S')}"
-        subprocess.run(["git", "commit", "-m", commit_msg], check=True)
-        # 3. Push to original branch
-        subprocess.run(["git", "push"], check=True)
-        print("--- GIT PUSH SUCCESSFUL ---\n")
+        print(f"Running: git commit -m \"{commit_msg}\"", flush=True)
+        subprocess.run(["git", "commit", "-m", commit_msg], cwd=git_root, check=True)
+        
+        # 5. Push
+        print("Running: git push", flush=True)
+        subprocess.run(["git", "push"], cwd=git_root, check=True)
+        
+        print("--- GIT PUSH SUCCESSFUL ---", flush=True)
+        return True
     except subprocess.CalledProcessError as e:
-        print(f"--- GIT PUSH FAILED: {e} ---")
+        print(f"--- GIT ERROR (code {e.returncode}) ---", flush=True)
+        if e.stdout: print(f"STDOUT: {e.stdout}", flush=True)
+        if e.stderr: print(f"STDERR: {e.stderr}", flush=True)
+        return False
     except Exception as e:
-        print(f"--- ERROR: {e} ---")
+        print(f"--- UNEXPECTED ERROR: {e} ---", flush=True)
+        return False
 
 def main():
     parser = argparse.ArgumentParser()
@@ -165,11 +189,11 @@ def main():
                         if hands_up:
                             status_text = "CONFIRMED! PUSHING..."
                             box_color = (0, 255, 0) # Green
-                            perform_git_push()
+                            success = perform_git_push()
                             last_push_time = time.time()
                             current_state = STATE_MONITORING
                             if args.extension:
-                                print(json.dumps({"action": "git_push", "ratio": ratio}), flush=True)
+                                print(json.dumps({"action": "git_push", "success": success, "ratio": ratio}), flush=True)
                         elif elapsed > CONFIRM_TIMEOUT:
                             print("Confirmation timed out.", flush=True)
                             current_state = STATE_MONITORING
