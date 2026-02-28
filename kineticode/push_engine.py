@@ -47,15 +47,19 @@ except Exception as e:
         print(json.dumps({"error": f"init_fail: {str(e)}"}), flush=True)
     sys.exit(1)
 
-def perform_git_push():
+def perform_git_push(workspace_path):
     """
     Executes the git sequence to push current changes to GitHub.
     """
     print("\n--- ATTEMPTING GIT PUSH ---", flush=True)
     try:
+        # Use provided workspace path, or default to script dir
+        target_dir = workspace_path if workspace_path else SCRIPT_DIR
+        print(f"Target Directory: {target_dir}", flush=True)
+
         # 1. Find git root
         root_res = subprocess.run(["git", "rev-parse", "--show-toplevel"], 
-                               capture_output=True, text=True, check=True)
+                               cwd=target_dir, capture_output=True, text=True, check=True)
         git_root = root_res.stdout.strip()
         print(f"Detected Git Root: {git_root}", flush=True)
         
@@ -95,10 +99,12 @@ def main():
     parser.add_argument('--extension', action='store_true', help='Extension mode (JSON output)')
     parser.add_argument('--debug', type=str, choices=['true', 'false'], default='true', help='Show debug window')
     parser.add_argument('--snap_threshold', type=float, default=0.05, help='Snap detection threshold')
+    parser.add_argument('--workspace', type=str, default='', help='Target workspace path')
     args = parser.parse_args()
 
     global DEBUG_WINDOW
     DEBUG_WINDOW = args.debug == 'true'
+    WORKSPACE_PATH = args.workspace
 
     cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
     if not cap.isOpened():
@@ -189,7 +195,7 @@ def main():
                         if hands_up:
                             status_text = "CONFIRMED! PUSHING..."
                             box_color = (0, 255, 0) # Green
-                            success = perform_git_push()
+                            success = perform_git_push(WORKSPACE_PATH)
                             last_push_time = time.time()
                             current_state = STATE_MONITORING
                             if args.extension:

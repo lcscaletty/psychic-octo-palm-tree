@@ -61,6 +61,7 @@ def main():
     parser.add_argument('--extension', action='store_true', help='Run in extension mode (JSON output)')
     parser.add_argument('--debug', type=str, choices=['true', 'false'], default='true', help='Show debug window')
     parser.add_argument('--snap_threshold', type=float, default=0.05, help='Snap detection threshold')
+    parser.add_argument('--workspace', type=str, default='', help='Target workspace path')
     args = parser.parse_args()
 
     global DEBUG_WINDOW, SNAP_THRESHOLD

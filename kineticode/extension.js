@@ -136,11 +136,14 @@ function startDetection(context, mode) {
     const debug = config.get('debugWindow', true);
     const snapThreshold = config.get('snapThreshold', 0.05);
 
+    const workspacePath = vscode.workspace.workspaceFolders?.[0]?.uri?.fsPath || context.extensionPath;
+
     const args = [
         scriptPath,
         '--extension',
         '--debug', debug.toString(),
-        '--snap_threshold', snapThreshold.toString()
+        '--snap_threshold', snapThreshold.toString(),
+        '--workspace', workspacePath
     ];
 
     console.log(`Spawning Engine: ${pythonCommand} ${args.join(' ')}`);
