@@ -3,80 +3,106 @@ const { spawn } = require('child_process');
 const path = require('path');
 
 let childProcess = null;
-let statusBarItem = null;
+let mainStatusBarItem = null;
+let originalFontSize = 14;
+let activeMode = null;
 
 function activate(context) {
     console.log('Air Gesture Extension is now active!');
 
-    statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
-    statusBarItem.text = "$(feedback) Air Gesture: Off";
-    statusBarItem.command = 'air-gesture.start';
-    statusBarItem.show();
+    mainStatusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
+    mainStatusBarItem.show();
+    updateStatusBar();
 
-    const startCommand = vscode.commands.registerCommand('air-gesture.start', () => {
-        if (childProcess) {
-            vscode.window.showInformationMessage('Air Gesture Engine is already running.');
-            return;
-        }
+    const selectModeCommand = vscode.commands.registerCommand('air-gesture.selectMode', () => {
+        showModePicker(context);
+    });
 
-        const scriptPath = path.join(context.extensionPath, 'gesture_engine.py');
-        const pythonCommand = process.platform === 'win32' ? 'python' : 'python3';
+    const startHandCommand = vscode.commands.registerCommand('air-gesture.startHand', () => {
+        startDetection(context, 'hand');
+    });
 
-        console.log(`Spawning Gesture Engine: ${pythonCommand} ${scriptPath}`);
+    const startPostureCommand = vscode.commands.registerCommand('air-gesture.startPosture', () => {
+        startDetection(context, 'posture');
+    });
 
-        childProcess = spawn(pythonCommand, [scriptPath, '--extension'], {
-            cwd: context.extensionPath
-        });
-
-        childProcess.on('error', (err) => {
-            console.error('Failed to start Python process:', err);
-            vscode.window.showErrorMessage(`Failed to start Gesture Engine: ${err.message}. Ensure Python is in your PATH.`);
-            stopDetection();
-        });
-
-        let buffer = '';
-        childProcess.stdout.on('data', (data) => {
-            buffer += data.toString();
-            const lines = buffer.split('\n');
-            buffer = lines.pop();
-
-            for (const line of lines) {
-                if (line.trim()) {
-                    try {
-                        const message = JSON.parse(line);
-                        handleGesture(message);
-                    } catch (e) {
-                        console.log(`Output: ${line}`);
-                    }
-                }
-            }
-        });
-
-        childProcess.stderr.on('data', (data) => {
-            const errorOutput = data.toString();
-            console.error(`Gesture Engine Error: ${errorOutput}`);
-            // Don't show every error in UI to avoids spam, but log it.
-        });
-
-        childProcess.on('close', (code) => {
-            if (code !== 0 && code !== null) {
-                vscode.window.showErrorMessage(`Gesture Engine crashed with code ${code}. Check the Debug Console.`);
-            }
-            console.log(`Gesture Engine exited with code ${code}`);
-            stopDetection();
-        });
-
-        statusBarItem.text = "$(feedback) Air Gesture: ON";
-        statusBarItem.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
-        statusBarItem.command = 'air-gesture.stop';
-        vscode.window.showInformationMessage('Air Gesture Detection Started!');
+    const startDualCommand = vscode.commands.registerCommand('air-gesture.startDual', () => {
+        startDetection(context, 'dual');
     });
 
     const stopCommand = vscode.commands.registerCommand('air-gesture.stop', () => {
         stopDetection();
     });
 
-    context.subscriptions.push(startCommand, stopCommand, statusBarItem);
+    context.subscriptions.push(selectModeCommand, startHandCommand, startPostureCommand, startDualCommand, stopCommand, mainStatusBarItem);
+}
+
+function showModePicker(context) {
+    if (activeMode) {
+        stopDetection();
+        return;
+    }
+
+    const items = [
+        { label: "$(rocket) Dual Control", description: "Hand Gestures + Posture monitoring", id: 'dual' },
+        { label: "$(hand) Hand Control", description: "Zone-based tab navigation", id: 'hand' },
+        { label: "$(person) Posture Control", description: "Font scaling based on posture", id: 'posture' }
+    ];
+
+    vscode.window.showQuickPick(items, { placeHolder: 'Select Air Control Mode' }).then(selection => {
+        if (selection) {
+            startDetection(context, selection.id);
+        }
+    });
+}
+
+function startDetection(context, mode) {
+    if (childProcess) {
+        stopDetection();
+    }
+
+    activeMode = mode;
+    let scriptName;
+    if (mode === 'hand') scriptName = 'gesture_engine.py';
+    else if (mode === 'posture') scriptName = 'posture_engine.py';
+    else scriptName = 'unified_engine.py';
+
+    const scriptPath = path.join(context.extensionPath, scriptName);
+    const pythonCommand = process.platform === 'win32' ? 'python' : 'python3';
+
+    if (mode === 'posture' || mode === 'dual') {
+        originalFontSize = vscode.workspace.getConfiguration('editor').get('fontSize');
+    }
+
+    childProcess = spawn(pythonCommand, [scriptPath, '--extension'], {
+        cwd: context.extensionPath
+    });
+
+    let buffer = '';
+    childProcess.stdout.on('data', (data) => {
+        buffer += data.toString();
+        const lines = buffer.split('\n');
+        buffer = lines.pop();
+
+        for (const line of lines) {
+            if (line.trim()) {
+                try {
+                    const message = JSON.parse(line);
+                    if (mode === 'dual') {
+                        handleGesture(message);
+                        handlePosture(message);
+                    } else if (mode === 'hand') {
+                        handleGesture(message);
+                    } else if (mode === 'posture') {
+                        handlePosture(message);
+                    }
+                } catch (e) { }
+            }
+        }
+    });
+
+    childProcess.on('close', () => stopDetection());
+    updateStatusBar();
 }
 
 function stopDetection() {
@@ -84,30 +110,43 @@ function stopDetection() {
         childProcess.kill();
         childProcess = null;
     }
-    if (statusBarItem) {
-        statusBarItem.text = "$(feedback) Air Gesture: Off";
-        statusBarItem.backgroundColor = undefined;
-        statusBarItem.command = 'air-gesture.start';
+
+    if (activeMode === 'posture' || activeMode === 'dual') {
+        vscode.workspace.getConfiguration('editor').update('fontSize', originalFontSize, vscode.ConfigurationTarget.Global);
     }
-    vscode.window.showInformationMessage('Air Gesture Detection Stopped.');
+
+    activeMode = null;
+    updateStatusBar();
+}
+
+function updateStatusBar() {
+    if (activeMode) {
+        mainStatusBarItem.text = `$(circle-filled) Air ${activeMode.toUpperCase()}: On (Stop)`;
+        mainStatusBarItem.command = 'air-gesture.stop';
+        mainStatusBarItem.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
+    } else {
+        mainStatusBarItem.text = `$(broadcast) Air Control: Select Mode`;
+        mainStatusBarItem.command = 'air-gesture.selectMode';
+        mainStatusBarItem.backgroundColor = undefined;
+    }
 }
 
 function handleGesture(message) {
     if (!message || !message.gesture) return;
+    if (message.gesture === 'swipe_left') vscode.commands.executeCommand('workbench.action.previousEditor');
+    else if (message.gesture === 'swipe_right') vscode.commands.executeCommand('workbench.action.nextEditor');
+}
 
-    console.log(`Received Gesture: ${message.gesture}`);
+async function handlePosture(message) {
+    if (!message || !message.posture) return;
 
-    if (message.gesture === 'swipe_left') {
-        vscode.window.setStatusBarMessage('Gesture: Swipe Left', 1000);
-        vscode.commands.executeCommand('workbench.action.previousEditor');
-    } else if (message.gesture === 'swipe_right') {
-        vscode.window.setStatusBarMessage('Gesture: Swipe Right', 1000);
-        vscode.commands.executeCommand('workbench.action.nextEditor');
-    } else if (message.gesture === 'fist') {
-        vscode.window.setStatusBarMessage('Gesture: Save', 2000);
-        vscode.commands.executeCommand('workbench.action.files.save');
-    } else if (message.gesture === 'palm') {
-        vscode.window.setStatusBarMessage('Gesture Active: Palm', 2000);
+    const config = vscode.workspace.getConfiguration('editor');
+    if (message.posture === 'slouch') {
+        vscode.window.setStatusBarMessage('🚨 POSTURE: Slouching! Shrinking font...', 2000);
+        await config.update('fontSize', 8, vscode.ConfigurationTarget.Global);
+    } else if (message.posture === 'upright') {
+        vscode.window.setStatusBarMessage('✅ POSTURE: Good! Restoring font...', 2000);
+        await config.update('fontSize', originalFontSize, vscode.ConfigurationTarget.Global);
     }
 }
 

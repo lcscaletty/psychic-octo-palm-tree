@@ -1,7 +1,7 @@
 {
     "name": "air-gesture-refactor",
-    "displayName": "Air Gesture Refactoring",
-    "description": "Control VS Code with hand gestures via webcam.",
+    "displayName": "Air Gesture Control",
+    "description": "Control VS Code with hand gestures and posture monitoring.",
     "version": "0.1.0",
     "publisher": "antigravity",
     "engines": {
@@ -17,8 +17,20 @@
     "contributes": {
         "commands": [
             {
-                "command": "air-gesture.start",
-                "title": "Air Gesture: Start Detection"
+                "command": "air-gesture.selectMode",
+                "title": "Air Gesture: Open Control Menu"
+            },
+            {
+                "command": "air-gesture.startHand",
+                "title": "Air Gesture: Hand Control Only"
+            },
+            {
+                "command": "air-gesture.startPosture",
+                "title": "Air Gesture: Posture Control Only"
+            },
+            {
+                "command": "air-gesture.startDual",
+                "title": "Air Gesture: Dual Control (Both)"
             },
             {
                 "command": "air-gesture.stop",
