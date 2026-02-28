@@ -48,6 +48,10 @@
                 "title": "Air Gesture: Dual Control (Both)"
             },
             {
+                "command": "air-gesture.startPush",
+                "title": "Air Gesture: Git Push Control"
+            },
+            {
                 "command": "air-gesture.stop",
                 "title": "Air Gesture: Stop Detection"
             }
@@ -64,6 +68,12 @@
                     "type": "number",
                     "default": 0.05,
                     "description": "Distance threshold for detecting a pinch (part of the snap gesture)."
+                },
+                "airGesture.pushTrigger": {
+                    "type": "string",
+                    "enum": ["physical_push", "snap", "swipe_left", "swipe_right"],
+                    "default": "physical_push",
+                    "description": "The gesture that triggers a Git Push when in Push Control mode."
                 }
             }
         }

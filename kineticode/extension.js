@@ -30,12 +30,15 @@ function activate(context) {
         startDetection(context, 'dual');
     });
 
+    const startPushCommand = vscode.commands.registerCommand('air-gesture.startPush', () => {
+        startDetection(context, 'push');
+    });
 
     const stopCommand = vscode.commands.registerCommand('air-gesture.stop', () => {
         stopDetection();
     });
 
-    context.subscriptions.push(selectModeCommand, startHandCommand, startPostureCommand, startDualCommand, stopCommand, mainStatusBarItem);
+    context.subscriptions.push(selectModeCommand, startHandCommand, startPostureCommand, startDualCommand, startPushCommand, stopCommand, mainStatusBarItem);
 }
 
 function showModePicker(context) {
@@ -46,12 +49,28 @@ function showModePicker(context) {
 
     const items = [
         { label: "$(rocket) Dual Control", description: "Hand Gestures + Posture", id: 'dual' },
+        { label: "$(cloud-upload) Git Push Control", description: "Choose a gesture to trigger Git Push", id: 'push' },
         { label: "$(hand) Hand Control", description: "Zone-based tab navigation", id: 'hand' },
         { label: "$(person) Posture Control", description: "Font scaling based on posture", id: 'posture' }
     ];
 
     vscode.window.showQuickPick(items, { placeHolder: 'Select Air Control Mode' }).then(async selection => {
         if (selection) {
+            if (selection.id === 'push') {
+                const triggers = [
+                    { label: "$(screen-full) Physical Push", description: "Push computer away", id: 'physical_push' },
+                    { label: "$(zap) Snap", description: "Pinch & release fingers", id: 'snap' },
+                    { label: "$(arrow-left) Swipe Left", description: "Move hand to left zone", id: 'swipe_left' },
+                    { label: "$(arrow-right) Swipe Right", description: "Move hand to right zone", id: 'swipe_right' }
+                ];
+                const triggerSelection = await vscode.window.showQuickPick(triggers, { placeHolder: 'Select Trigger Gesture for Git Push' });
+                if (triggerSelection) {
+                    await vscode.workspace.getConfiguration('airGesture').update('pushTrigger', triggerSelection.id, vscode.ConfigurationTarget.Global);
+                } else {
+                    return; // Cancelled
+                }
+            }
+            
             const ready = await checkDependencies();
             if (ready) {
                 startDetection(context, selection.id);
@@ -100,6 +119,10 @@ function startDetection(context, mode) {
     let scriptName;
     if (mode === 'hand') scriptName = 'gesture_engine.py';
     else if (mode === 'posture') scriptName = 'posture_engine.py';
+    else if (mode === 'push') {
+        const trigger = vscode.workspace.getConfiguration('airGesture').get('pushTrigger', 'physical_push');
+        scriptName = trigger === 'physical_push' ? 'push_engine.py' : 'gesture_engine.py';
+    }
     else scriptName = 'unified_engine.py';
 
     const scriptPath = path.join(context.extensionPath, scriptName);
@@ -139,6 +162,8 @@ function startDetection(context, mode) {
                         handleGesture(message);
                     } else if (mode === 'posture') {
                         handlePosture(message);
+                    } else if (mode === 'push') {
+                        handlePushTrigger(message);
                     }
                 } catch (e) { }
             }
@@ -180,6 +205,36 @@ function handleGesture(message) {
     if (message.gesture === 'swipe_left') vscode.commands.executeCommand('workbench.action.previousEditor');
     else if (message.gesture === 'swipe_right') vscode.commands.executeCommand('workbench.action.nextEditor');
     else if (message.gesture === 'snap') vscode.commands.executeCommand('workbench.action.files.newUntitledFile');
+}
+
+function handlePushTrigger(message) {
+    if (!message) return;
+    
+    const trigger = vscode.workspace.getConfiguration('airGesture').get('pushTrigger', 'physical_push');
+    let triggered = false;
+
+    if (trigger === 'physical_push' && message.action === 'git_push') {
+        // The push_engine.py already performs the git push internally, 
+        // but we can show a notification here.
+        vscode.window.showInformationMessage('🚀 Push Detected: Git Push sequence triggered!');
+        triggered = true;
+    } else if (message.gesture === trigger) {
+        triggered = true;
+    }
+
+    if (triggered && trigger !== 'physical_push') {
+        vscode.window.showInformationMessage('🚀 Gesture Detected: Starting Git Push...', 'Commit & Push').then(selection => {
+            if (selection === 'Commit & Push') {
+                executeGitPush();
+            }
+        });
+    }
+}
+
+async function executeGitPush() {
+    const terminal = vscode.window.terminals.find(t => t.name === "Git Push") || vscode.window.createTerminal("Git Push");
+    terminal.show();
+    terminal.sendText('git add . && git commit -m "Auto-push from Air Gesture" && git push');
 }
 
 async function handlePosture(message) {
