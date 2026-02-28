@@ -4,6 +4,7 @@ const path = require('path');
 
 let childProcess = null;
 let mainStatusBarItem = null;
+let cameraProvider = null;
 let originalFontSize = 14;
 let activeMode = null;
 
@@ -13,6 +14,11 @@ function activate(context) {
     mainStatusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
     mainStatusBarItem.show();
     updateStatusBar();
+
+    cameraProvider = new KineticodeViewProvider(context.extensionUri);
+    context.subscriptions.push(
+        vscode.window.registerWebviewViewProvider('kineticode.cameraView', cameraProvider)
+    );
 
     const selectModeCommand = vscode.commands.registerCommand('air-gesture.selectMode', () => {
         showModePicker(context);
@@ -70,7 +76,7 @@ async function checkDependencies() {
             } else {
                 vscode.window.showErrorMessage("Missing Python dependencies (opencv, mediapipe, etc.). Install them now?", "Install", "Cancel").then(selection => {
                     if (selection === "Install") {
-                        const terminal = vscode.window.createTerminal("Air Gesture Install");
+                        const terminal = vscode.window.createTerminal("Kineticode Install");
                         terminal.show();
                         terminal.sendText(`${pythonCommand} -m pip install opencv-python mediapipe pyautogui numpy`);
                         vscode.window.showInformationMessage("Installing dependencies... Please restart the mode once finished.");
@@ -96,9 +102,11 @@ function startDetection(context, modes) {
     }
 
     const config = vscode.workspace.getConfiguration('airGesture');
-    const debug = config.get('debugWindow', true);
+    const debug = config.get('debugWindow', false);
+    const enablePreview = config.get('enablePreview', true);
 
     const args = [scriptPath, '--extension', '--debug', debug.toString()];
+    if (enablePreview) args.push('--stream');
     if (modes.includes('hand')) args.push('--hands');
     if (modes.includes('posture')) args.push('--posture');
     if (modes.includes('face')) args.push('--face');
@@ -107,21 +115,31 @@ function startDetection(context, modes) {
         cwd: context.extensionPath
     });
 
-    let buffer = '';
+    let lineBuffer = '';
     childProcess.stdout.on('data', (data) => {
-        buffer += data.toString();
-        const lines = buffer.split('\n');
-        buffer = lines.pop();
+        lineBuffer += data.toString();
+        const lines = lineBuffer.split('\n');
+        lineBuffer = lines.pop();
 
-        for (const line of lines) {
-            if (line.trim()) {
-                try {
-                    const message = JSON.parse(line);
-                    handleGesture(message);
-                    handlePosture(message);
-                } catch (e) { }
+        lines.forEach(line => {
+            try {
+                const msg = JSON.parse(line.trim());
+                if (msg.status === 'ready') {
+                    vscode.window.showInformationMessage('Kineticode Started!');
+                } else if (msg.gesture) {
+                    handleGesture(msg.gesture);
+                } else if (msg.posture) {
+                    handlePosture(msg.posture);
+                } else if (msg.frame && cameraProvider) {
+                    cameraProvider.updateFrame(msg.frame);
+                } else if (msg.error) {
+                    vscode.window.showErrorMessage(`Kineticode Error: ${msg.error}`);
+                    stopDetection();
+                }
+            } catch (e) {
+                // console.error("Parse Error:", line);
             }
-        }
+        });
     });
 
     childProcess.on('close', () => stopDetection());
@@ -134,8 +152,12 @@ function stopDetection() {
         childProcess = null;
     }
 
-    if (activeMode && activeMode.includes('POSTURE')) {
+    if (activeMode && activeMode.includes('posture')) {
         vscode.workspace.getConfiguration('editor').update('fontSize', originalFontSize, vscode.ConfigurationTarget.Global);
+    }
+
+    if (cameraProvider) {
+        cameraProvider.clear();
     }
 
     activeMode = null;
@@ -154,26 +176,79 @@ function updateStatusBar() {
     }
 }
 
-function handleGesture(message) {
-    if (!message || !message.gesture) return;
-    if (message.gesture === 'swipe_left') vscode.commands.executeCommand('workbench.action.previousEditor');
-    else if (message.gesture === 'swipe_right') vscode.commands.executeCommand('workbench.action.nextEditor');
-    else if (message.gesture === 'clap') vscode.commands.executeCommand('workbench.action.files.newUntitledFile');
+function handleGesture(gesture) {
+    if (!gesture) return;
+    if (gesture === 'swipe_left') vscode.commands.executeCommand('workbench.action.previousEditor');
+    else if (gesture === 'swipe_right') vscode.commands.executeCommand('workbench.action.nextEditor');
+    else if (gesture === 'clap') vscode.commands.executeCommand('workbench.action.files.newUntitledFile');
 }
 
-async function handlePosture(message) {
-    if (!message || !message.posture) return;
-
-    const config = vscode.workspace.getConfiguration('editor');
-    if (message.posture === 'slouch') {
-        vscode.window.setStatusBarMessage('🚨 POSTURE: Slouching! Shrinking font...', 2000);
-        await config.update('fontSize', 8, vscode.ConfigurationTarget.Global);
-    } else if (message.posture === 'upright') {
-        vscode.window.setStatusBarMessage('✅ POSTURE: Good! Restoring font...', 2000);
-        await config.update('fontSize', originalFontSize, vscode.ConfigurationTarget.Global);
+function handlePosture(state) {
+    const config = vscode.workspace.getConfiguration();
+    const currentSize = config.get('editor.fontSize');
+    if (state === 'slouch') {
+        config.update('editor.fontSize', currentSize + 4, vscode.ConfigurationTarget.Global);
+    } else {
+        config.update('editor.fontSize', Math.max(12, currentSize - 4), vscode.ConfigurationTarget.Global);
     }
 }
 
+class KineticodeViewProvider {
+    constructor(extensionUri) {
+        this._extensionUri = extensionUri;
+        this._view = null;
+    }
+
+    resolveWebviewView(webviewView) {
+        this._view = webviewView;
+        webviewView.webview.options = { enableScripts: true };
+        this.clear();
+    }
+
+    updateFrame(frame) {
+        if (this._view) {
+            this._view.webview.postMessage({ command: 'updateFrame', frame });
+        }
+    }
+
+    clear() {
+        if (this._view) {
+            this._view.webview.postMessage({ command: 'clear' });
+            this._view.webview.html = this._getHtmlForWebview();
+        }
+    }
+
+    _getHtmlForWebview() {
+        return `
+            <!DOCTYPE html>
+            <html>
+            <body style="background: #1e1e1e; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; margin: 0; color: white; font-family: sans-serif;">
+                <img id="video-stream" style="width: 100%; border: 1px solid #333; display: none;" src=""/>
+                <div id="placeholder" style="text-align: center; padding: 20px;">
+                    <div style="font-size: 40px; margin-bottom: 10px;">📸</div>
+                    <div>Select a mode to start the camera feed</div>
+                </div>
+                <script>
+                    const img = document.getElementById('video-stream');
+                    const placeholder = document.getElementById('placeholder');
+                    window.addEventListener('message', event => {
+                        const message = event.data;
+                        if (message.command === 'updateFrame') {
+                            img.src = 'data:image/jpeg;base64,' + message.frame;
+                            img.style.display = 'block';
+                            placeholder.style.display = 'none';
+                        } else if (message.command === 'clear') {
+                            img.style.display = 'none';
+                            img.src = '';
+                            placeholder.style.display = 'block';
+                        }
+                    });
+                </script>
+            </body>
+            </html>
+        `;
+    }
+}
 
 function deactivate() {
     stopDetection();

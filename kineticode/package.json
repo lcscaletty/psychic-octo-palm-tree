@@ -2,7 +2,7 @@
     "name": "kineticode",
     "displayName": "Kineticode: Air Gesture Control",
     "description": "Control VS Code with hand gestures and posture monitoring.",
-    "version": "0.1.1",
+    "version": "0.1.2",
     "publisher": "Kineticode1",
     "license": "MIT",
     "qna": false,
@@ -32,21 +32,40 @@
     "contributes": {
         "commands": [
             {
-                "command": "air-gesture.selectMode",
-                "title": "Kineticode: Open Control Menu"
-            },
-            {
                 "command": "air-gesture.stop",
                 "title": "Kineticode: Stop Detection"
             }
         ],
+        "viewsContainers": {
+            "activitybar": [
+                {
+                    "id": "kineticode-explorer",
+                    "title": "Kineticode",
+                    "icon": "icon.png"
+                }
+            ]
+        },
+        "views": {
+            "kineticode-explorer": [
+                {
+                    "type": "webview",
+                    "id": "kineticode.cameraView",
+                    "name": "Camera Feed"
+                }
+            ]
+        },
         "configuration": {
             "title": "Kineticode Control",
             "properties": {
                 "airGesture.debugWindow": {
                     "type": "boolean",
+                    "default": false,
+                    "description": "Show/hide the legacy OpenCV camera window (appears outside VS Code)."
+                },
+                "airGesture.enablePreview": {
+                    "type": "boolean",
                     "default": true,
-                    "description": "Show/hide the camera preview and tracking visualizers."
+                    "description": "Show/hide the in-editor camera preview in the Kineticode sidebar."
                 }
             }
         }

@@ -8,6 +8,7 @@ import sys
 import os
 import argparse
 import pyautogui
+import base64
 
 # --- Configuration ---
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -51,6 +52,7 @@ def main():
     parser.add_argument('--hands', action='store_true', help='Enable Hand Tracking')
     parser.add_argument('--posture', action='store_true', help='Enable Posture Tracking')
     parser.add_argument('--face', action='store_true', help='Enable Face/Wink Tracking')
+    parser.add_argument('--stream', action='store_true', help='Stream base64 frames to stdout')
     args = parser.parse_args()
 
     global DEBUG_WINDOW, hand_landmarker, pose_landmarker, face_landmarker
@@ -114,6 +116,8 @@ def main():
     right_blink_ema = 0
     wink_dwell_counter = 0
     WINK_DWELL_THRESHOLD = 3 # frames
+    last_stream_time = 0
+    STREAM_FPS = 15
 
     if args.extension:
         print(json.dumps({"status": "ready"}), flush=True)
@@ -283,9 +287,22 @@ def main():
                                           (int((min_ex-padding)*w), int((min_ey-padding)*h)), 
                                           (int((max_ex+padding)*w), int((max_ey+padding)*h)), 
                                           color, 2)
+            
+            if DEBUG_WINDOW:
+                cv2.imshow('Kineticode Control Hub', image)
+                if cv2.waitKey(1) & 0xFF == ord('q'): break
 
-            cv2.imshow('Kineticode Control Hub', image)
-            if cv2.waitKey(1) & 0xFF == ord('q'): break
+        # 4. STREAM TO WEBVIEW
+        if args.stream and time.time() - last_stream_time > (1.0 / STREAM_FPS):
+            last_stream_time = time.time()
+            try:
+                # Resize for performance
+                small_image = cv2.resize(image, (320, 240))
+                _, buffer = cv2.imencode('.jpg', small_image, [cv2.IMWRITE_JPEG_QUALITY, 70])
+                jpg_as_text = base64.b64encode(buffer).decode('utf-8')
+                print(json.dumps({"frame": jpg_as_text}), flush=True)
+            except Exception as e:
+                pass 
 
     cap.release()
     cv2.destroyAllWindows()
