@@ -56,6 +56,8 @@ def main():
     neutral_shoulder_y = None
     posture_start_time = time.time()
     current_posture = "upright"
+    snap_prepared = False
+    last_snap_time = 0
 
     if args.extension:
         print(json.dumps({"status": "ready"}), flush=True)
@@ -128,6 +130,22 @@ def main():
                 
                 if current_gesture and args.extension:
                     print(json.dumps({"gesture": current_gesture}), flush=True)
+
+                # --- Snap Detection ---
+                thumb_tip = hl[4]
+                middle_tip = hl[12]
+                dist = ((thumb_tip.x - middle_tip.x)**2 + (thumb_tip.y - middle_tip.y)**2)**0.5
+                
+                if dist < 0.05: # SNAP_THRESHOLD
+                    snap_prepared = True
+                elif snap_prepared and dist > 0.1:
+                    if time.time() - last_snap_time > 1.0: # SNAP_COOLDOWN
+                        if args.extension:
+                            print(json.dumps({"gesture": "snap"}), flush=True)
+                        last_snap_time = time.time()
+                        hand_status = "SNAP!"
+                        hand_box_color = (255, 0, 255)
+                    snap_prepared = False
 
         else:
             hand_presence_start = None

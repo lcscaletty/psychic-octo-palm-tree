@@ -30,6 +30,7 @@ function activate(context) {
         startDetection(context, 'dual');
     });
 
+
     const stopCommand = vscode.commands.registerCommand('air-gesture.stop', () => {
         stopDetection();
     });
@@ -44,7 +45,7 @@ function showModePicker(context) {
     }
 
     const items = [
-        { label: "$(rocket) Dual Control", description: "Hand Gestures + Posture monitoring", id: 'dual' },
+        { label: "$(rocket) Dual Control", description: "Hand Gestures + Posture", id: 'dual' },
         { label: "$(hand) Hand Control", description: "Zone-based tab navigation", id: 'hand' },
         { label: "$(person) Posture Control", description: "Font scaling based on posture", id: 'posture' }
     ];
@@ -135,6 +136,7 @@ function handleGesture(message) {
     if (!message || !message.gesture) return;
     if (message.gesture === 'swipe_left') vscode.commands.executeCommand('workbench.action.previousEditor');
     else if (message.gesture === 'swipe_right') vscode.commands.executeCommand('workbench.action.nextEditor');
+    else if (message.gesture === 'snap') vscode.commands.executeCommand('workbench.action.files.newUntitledFile');
 }
 
 async function handlePosture(message) {
@@ -149,6 +151,7 @@ async function handlePosture(message) {
         await config.update('fontSize', originalFontSize, vscode.ConfigurationTarget.Global);
     }
 }
+
 
 function deactivate() {
     stopDetection();

@@ -15,6 +15,8 @@ MODEL_PATH = os.path.join(SCRIPT_DIR, 'hand_landmarker.task')
 COOLDOWN = 0.35  
 AUTO_REPEAT_DELAY = 0.4 
 DEBUG_WINDOW = True 
+SNAP_THRESHOLD = 0.05  # Distance threshold for pinch
+SNAP_COOLDOWN = 1.0    # Prevent rapid multiple snaps
 
 # --- PyAutoGUI Safety Settings ---
 pyautogui.PAUSE = 0.1
@@ -50,6 +52,9 @@ def trigger_action(gesture, use_extension=False):
         elif gesture == "swipe_right":
             print("Action: Next Tab (Right Side)")
             pyautogui.hotkey('ctrl', 'pagedown')
+        elif gesture == "snap":
+            print("Action: New File (Snap)")
+            pyautogui.hotkey('ctrl', 'n')
 
 def main():
     parser = argparse.ArgumentParser(description='Air Gesture Engine')
@@ -71,6 +76,10 @@ def main():
     NEUTRAL_ZONE = (0.35, 0.65) # Reset here
     LEFT_ZONE = 0.3
     RIGHT_ZONE = 0.7
+    
+    # Snap State
+    snap_prepared = False
+    last_snap_time = 0
     
     smoothed_x = None
     smoothed_y = None
@@ -183,6 +192,26 @@ def main():
                             else:
                                 box_color = (0, 255, 255) # Yellow
                                 status_text = "In Right Zone"
+                
+                # --- Snap Detection ---
+                # Thumb Tip (4), Middle Finger Tip (12)
+                thumb_tip = hand_landmarks[4]
+                middle_tip = hand_landmarks[12]
+                
+                # Euclidean distance
+                dist = ((thumb_tip.x - middle_tip.x)**2 + (thumb_tip.y - middle_tip.y)**2)**0.5
+                
+                if dist < SNAP_THRESHOLD:
+                    snap_prepared = True
+                elif snap_prepared and dist > SNAP_THRESHOLD * 2:
+                    # Rapid release after pinch
+                    if time.time() - last_snap_time > SNAP_COOLDOWN:
+                        current_gesture = "snap"
+                        last_snap_time = time.time()
+                        trigger_action(current_gesture, use_extension=args.extension)
+                        box_color = (255, 0, 255) # Purple for snap
+                        status_text = "SNAP DETECTED!"
+                    snap_prepared = False
                 
                 # Draw Visuals
                 if DEBUG_WINDOW:
