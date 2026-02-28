@@ -92,14 +92,20 @@ def main():
     start_time = time.time()
     
     # State for detection
-    push_in_progress = False
+    STATE_MONITORING = "MONITORING"
+    STATE_AWAITING_CONFIRMATION = "AWAITING_CONFIRMATION"
+    
+    current_state = STATE_MONITORING
+    confirmation_start_time = 0
+    CONFIRM_TIMEOUT = 10.0 # 10 seconds to confirm
 
     if args.extension:
         print(json.dumps({"status": "push_engine_ready"}), flush=True)
     else:
         print("--- Push-to-GitHub Engine Active ---")
         print("1. Sit naturally for 2 seconds to calibrate.")
-        print("2. Push your laptop/computer away to trigger a Git Push.")
+        print("2. Push your laptop away to enter confirmation mode.")
+        print("3. Raise BOTH HANDS above your head to confirm the push.")
         print("Press 'Q' or 'ESC' to quit.")
 
     print("Main loop starting...", flush=True)
@@ -121,7 +127,11 @@ def main():
 
         if results.pose_landmarks:
             for pose_landmarks in results.pose_landmarks:
-                # Keypoints: 2(LE), 5(RE) 11(LS), 12(RS)
+                # Keypoints: 0(Nose), 2(LE), 5(RE), 15(LW), 16(RW)
+                nose_y = pose_landmarks[0].y
+                lw_y = pose_landmarks[15].y
+                rw_y = pose_landmarks[16].y
+                
                 # Distance between eyes is a good proxy for face distance
                 eye_dist = ((pose_landmarks[2].x - pose_landmarks[5].x)**2 + 
                             (pose_landmarks[2].y - pose_landmarks[5].y)**2)**0.5
@@ -131,34 +141,57 @@ def main():
                     if neutral_dist is None:
                         neutral_dist = eye_dist
                     else:
-                        # EMA for stable calibration
                         neutral_dist = 0.1 * eye_dist + 0.9 * neutral_dist
                     status_text = f"Calibrating: {int((time.time()-start_time)/WARMUP_TIME*100)}%"
                 else:
                     # Detection phase
                     ratio = eye_dist / neutral_dist if neutral_dist else 1.0
                     
-                    if ratio < PUSH_THRESHOLD:
-                        status_text = "PUSH DETECTED!"
-                        box_color = (0, 255, 0) # Green
+                    if current_state == STATE_MONITORING:
+                        if ratio < PUSH_THRESHOLD and (time.time() - last_push_time > COOLDOWN):
+                            current_state = STATE_AWAITING_CONFIRMATION
+                            confirmation_start_time = time.time()
+                            print("Push detected! Awaiting hands-up confirmation...", flush=True)
+                        else:
+                            status_text = "Monitoring..."
+                            box_color = (255, 0, 0) # Blue
+                    
+                    elif current_state == STATE_AWAITING_CONFIRMATION:
+                        # Check for hands up (both wrists above nose)
+                        # Note: y grows downwards, so "above" means y is smaller
+                        hands_up = lw_y < nose_y and rw_y < nose_y
                         
-                        if time.time() - last_push_time > COOLDOWN:
+                        elapsed = time.time() - confirmation_start_time
+                        if hands_up:
+                            status_text = "CONFIRMED! PUSHING..."
+                            box_color = (0, 255, 0) # Green
                             perform_git_push()
                             last_push_time = time.time()
+                            current_state = STATE_MONITORING
                             if args.extension:
                                 print(json.dumps({"action": "git_push", "ratio": ratio}), flush=True)
-                    else:
-                        status_text = "Monitoring..."
-                        box_color = (255, 0, 0) # Blue
+                        elif elapsed > CONFIRM_TIMEOUT:
+                            print("Confirmation timed out.", flush=True)
+                            current_state = STATE_MONITORING
+                        else:
+                            status_text = f"RAISE HANDS! ({int(CONFIRM_TIMEOUT - elapsed)}s)"
+                            box_color = (0, 165, 255) # Bright Orange
 
                 # Visuals
                 if DEBUG_WINDOW:
-                    # Draw eye line
-                    p1 = (int(pose_landmarks[2].x*w), int(pose_landmarks[2].y*h))
-                    p2 = (int(pose_landmarks[5].x*w), int(pose_landmarks[5].y*h))
-                    cv2.line(image, p1, p2, box_color, 2)
+                    # Draw indicators
+                    p_nose = (int(pose_landmarks[0].x*w), int(pose_landmarks[0].y*h))
+                    p_lw = (int(pose_landmarks[15].x*w), int(pose_landmarks[15].y*h))
+                    p_rw = (int(pose_landmarks[16].x*w), int(pose_landmarks[16].y*h))
+                    
+                    cv2.circle(image, p_nose, 5, (255, 255, 255), -1)
+                    cv2.circle(image, p_lw, 8, box_color, -1)
+                    cv2.circle(image, p_rw, 8, box_color, -1)
+                    
                     cv2.putText(image, status_text, (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.8, box_color, 2)
                     cv2.putText(image, f"Dist Ratio: {ratio:.2f}" if 'ratio' in locals() else "Calibrating...", (50, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.6, box_color, 2)
+                    if current_state == STATE_AWAITING_CONFIRMATION:
+                         cv2.rectangle(image, (0,0), (w,h), box_color, 10) # Flash border during confirmation phase
 
         if DEBUG_WINDOW:
             cv2.imshow('Push Engine Preview', image)
