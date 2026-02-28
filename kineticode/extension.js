@@ -70,7 +70,7 @@ function showModePicker(context) {
                     return; // Cancelled
                 }
             }
-            
+
             const ready = await checkDependencies();
             if (ready) {
                 startDetection(context, selection.id);
@@ -136,18 +136,39 @@ function startDetection(context, mode) {
     const debug = config.get('debugWindow', true);
     const snapThreshold = config.get('snapThreshold', 0.05);
 
-    childProcess = spawn(pythonCommand, [
+    const args = [
         scriptPath,
         '--extension',
         '--debug', debug.toString(),
         '--snap_threshold', snapThreshold.toString()
-    ], {
+    ];
+
+    console.log(`Spawning Engine: ${pythonCommand} ${args.join(' ')}`);
+    console.log(`CWD: ${context.extensionPath}`);
+
+    childProcess = spawn(pythonCommand, args, {
         cwd: context.extensionPath
+    });
+
+    childProcess.on('error', (err) => {
+        vscode.window.showErrorMessage(`Failed to start engine: ${err.message}`);
+        stopDetection();
+    });
+
+    childProcess.stderr.on('data', (data) => {
+        const out = data.toString();
+        console.error(`Engine Error: ${out}`);
+        // If it looks like a real error (not just a mediapipe warning), show it
+        if (out.toLowerCase().includes('error') || out.toLowerCase().includes('fail')) {
+            vscode.window.showWarningMessage(`Engine Warning: ${out.substring(0, 100)}...`);
+        }
     });
 
     let buffer = '';
     childProcess.stdout.on('data', (data) => {
-        buffer += data.toString();
+        const out = data.toString();
+        console.log(`Engine Output: ${out}`);
+        buffer += out;
         const lines = buffer.split('\n');
         buffer = lines.pop();
 
@@ -170,7 +191,13 @@ function startDetection(context, mode) {
         }
     });
 
-    childProcess.on('close', () => stopDetection());
+    childProcess.on('close', (code) => {
+        console.log(`Engine process exited with code ${code}`);
+        if (code !== 0 && activeMode) {
+            vscode.window.showErrorMessage(`Air Gesture Engine stopped unexpectedly (Code: ${code}). Check if another app is using the camera.`);
+        }
+        stopDetection();
+    });
     updateStatusBar();
 }
 
@@ -209,7 +236,7 @@ function handleGesture(message) {
 
 function handlePushTrigger(message) {
     if (!message) return;
-    
+
     const trigger = vscode.workspace.getConfiguration('airGesture').get('pushTrigger', 'physical_push');
     let triggered = false;
 

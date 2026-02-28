@@ -9,6 +9,11 @@ import os
 import argparse
 import subprocess
 
+print("--- PUSH ENGINE STARTING ---", flush=True)
+print(f"Python Version: {sys.version}", flush=True)
+print(f"CWD: {os.getcwd()}", flush=True)
+print(f"Script Dir: {os.path.dirname(os.path.abspath(__file__))}", flush=True)
+
 # --- Configuration ---
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 # We'll use the Pose Landmarker to track the head/shoulders as a proxy for face distance
@@ -24,15 +29,23 @@ if not os.path.exists(MODEL_PATH):
     print(f"Error: Model file {MODEL_PATH} not found.")
     sys.exit(1)
 
-base_options = python.BaseOptions(model_asset_path=MODEL_PATH)
-options = vision.PoseLandmarkerOptions(
-    base_options=base_options,
-    num_poses=1,
-    min_pose_detection_confidence=0.5,
-    min_pose_presence_confidence=0.5,
-    min_tracking_confidence=0.5
-)
-landmarker = vision.PoseLandmarker.create_from_options(options)
+try:
+    print(f"Loading Model: {MODEL_PATH}", flush=True)
+    base_options = python.BaseOptions(model_asset_path=MODEL_PATH)
+    options = vision.PoseLandmarkerOptions(
+        base_options=base_options,
+        num_poses=1,
+        min_pose_detection_confidence=0.5,
+        min_pose_presence_confidence=0.5,
+        min_tracking_confidence=0.5
+    )
+    landmarker = vision.PoseLandmarker.create_from_options(options)
+    print("Model Loaded Successfully", flush=True)
+except Exception as e:
+    print(f"CRITICAL ERROR during initialization: {e}", flush=True)
+    if "--extension" in sys.argv:
+        print(json.dumps({"error": f"init_fail: {str(e)}"}), flush=True)
+    sys.exit(1)
 
 def perform_git_push():
     """
@@ -57,13 +70,23 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--extension', action='store_true', help='Extension mode (JSON output)')
     parser.add_argument('--debug', type=str, choices=['true', 'false'], default='true', help='Show debug window')
+    parser.add_argument('--snap_threshold', type=float, default=0.05, help='Snap detection threshold')
     args = parser.parse_args()
 
     global DEBUG_WINDOW
     DEBUG_WINDOW = args.debug == 'true'
 
     cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
+    if not cap.isOpened():
+        print("Warning: CAP_DSHOW failed, trying default...")
+        cap = cv2.VideoCapture(0)
     
+    if not cap.isOpened():
+        print("Error: Could not open webcam.")
+        if args.extension:
+            print(json.dumps({"error": "webcam_fail"}), flush=True)
+        return
+
     neutral_dist = None
     last_push_time = 0
     start_time = time.time()
@@ -79,9 +102,13 @@ def main():
         print("2. Push your laptop/computer away to trigger a Git Push.")
         print("Press 'Q' or 'ESC' to quit.")
 
+    print("Main loop starting...", flush=True)
+
     while cap.isOpened():
         success, image = cap.read()
-        if not success: continue
+        if not success:
+            print("Failed to read frame", flush=True)
+            continue
 
         image = cv2.flip(image, 1)
         h, w, _ = image.shape

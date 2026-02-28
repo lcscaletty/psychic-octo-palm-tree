@@ -35,6 +35,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--extension', action='store_true')
     parser.add_argument('--debug', type=str, choices=['true', 'false'], default='true')
+    parser.add_argument('--snap_threshold', type=float, default=0.05)
     args = parser.parse_args()
 
     global DEBUG_WINDOW
