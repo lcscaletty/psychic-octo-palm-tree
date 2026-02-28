@@ -3,10 +3,10 @@
     "displayName": "Air Gesture Control",
     "description": "Control VS Code with hand gestures and posture monitoring.",
     "version": "0.1.0",
-    "publisher": "USER_FIXME",
+    "publisher": "aa990250-5b18-6590-bd67-15403ce8e0c6",
     "repository": {
         "type": "git",
-        "url": "https://github.com/USER_FIXME/air-gesture-control"
+        "url": "https://github.com/lcscaletty/psychic-octo-palm-tree/blob/main/README.md#license"
     },
     "icon": "icon.png",
     "engines": {
