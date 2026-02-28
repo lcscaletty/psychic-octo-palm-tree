@@ -12,13 +12,13 @@ import argparse
 # --- Configuration ---
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 MODEL_PATH = os.path.join(SCRIPT_DIR, 'hand_landmarker.task')
-COOLDOWN = 0.6  # Seconds between events
-SWIPE_THRESHOLD = 0.12
-DEBUG_WINDOW = True # Show the camera feed
+COOLDOWN = 0.35  
+AUTO_REPEAT_DELAY = 0.4 
+DEBUG_WINDOW = True 
 
 # --- PyAutoGUI Safety Settings ---
 pyautogui.PAUSE = 0.1
-pyautogui.FAILSAFE = True # Move mouse to corner to abort
+pyautogui.FAILSAFE = True 
 
 # --- MediaPipe Task Initialization ---
 if not os.path.exists(MODEL_PATH):
@@ -35,47 +35,21 @@ options = vision.HandLandmarkerOptions(
 )
 landmarker = vision.HandLandmarker.create_from_options(options)
 
-def get_gesture(hand_landmarks):
-    """
-    Gesture detection based on finger states.
-    4(thumb_tip), 8(index_tip), 12(middle_tip), 16(ring_tip), 20(pinky_tip)
-    """
-    fingers = []
-    
-    # Simple 'is it up' check (tip vs mcp)
-    # Thumb
-    if hand_landmarks[4].y < hand_landmarks[3].y:
-        fingers.append(1)
-    else:
-        fingers.append(0)
-        
-    # Other 4 fingers
-    for tip, mcp in [(8, 5), (12, 9), (16, 13), (20, 17)]:
-        if hand_landmarks[tip].y < hand_landmarks[mcp].y:
-            fingers.append(1)
-        else:
-            fingers.append(0)
-            
-    if sum(fingers) == 0:
-        return "fist"
-    return None
-
 def trigger_action(gesture, use_extension=False):
     """
-    Performs system actions based on gestures.
+    Performs system actions based on gestures/zones.
     """
     if use_extension:
         # Output JSON for the VS Code Extension
         print(json.dumps({"gesture": gesture}), flush=True)
     else:
         # Standalone mode: UI Automation
-        print(f"Action: {gesture}")
         if gesture == "swipe_left":
+            print("Action: Previous Tab (Left Side)")
             pyautogui.hotkey('ctrl', 'pageup') 
         elif gesture == "swipe_right":
+            print("Action: Next Tab (Right Side)")
             pyautogui.hotkey('ctrl', 'pagedown')
-        elif gesture == "fist":
-            pyautogui.hotkey('ctrl', 's')
 
 def main():
     parser = argparse.ArgumentParser(description='Air Gesture Engine')
@@ -89,22 +63,34 @@ def main():
         print("Error: Could not open webcam.")
         return
 
-    prev_gesture = None
+    # --- Zone State ---
+    can_trigger = True
     last_event_time = 0
-    swipe_start_x = None
-    SWIPE_DISTANCE_THRESHOLD = 0.15 # Reduced for better sensitivity
+    neutral_y = None
+    VERTICAL_LIMIT = 0.12 # Max deviation from entry height
+    NEUTRAL_ZONE = (0.35, 0.65) # Reset here
+    LEFT_ZONE = 0.3
+    RIGHT_ZONE = 0.7
+    
+    smoothed_x = None
+    smoothed_y = None
+    EMA_ALPHA = 0.3 
+    
+    hand_presence_start = None
+    hand_lost_frames = 0
+    LOST_FRAME_LIMIT = 5 
+    WARMUP_DELAY = 0.2
     
     if args.extension:
         print(json.dumps({"status": "ready"}), flush=True)
     else:
-        print("--- Air Gesture Control: Standalone Mode ---")
-        print("Commands:")
-        print(" - Swipe Left (Inwards): Next Tab")
-        print(" - Swipe Right (Outwards): Previous Tab")
-        print(" - Fist: Save File")
+        print("--- Air Gesture Control: Zone Mode ---")
+        print("Zones:")
+        print(" [0.0 - 0.3] : Previous Tab (Left Side)")
+        print(" [0.3 - 0.7] : Neutral (Reset)")
+        print(" [0.7 - 1.0] : Next Tab (Right Side)")
         print("Press 'ESC' in the window or 'Q' in terminal to quit.")
 
-    # Create window before starting loop
     if DEBUG_WINDOW:
         cv2.namedWindow('Air Gesture Preview', cv2.WINDOW_AUTOSIZE)
 
@@ -124,64 +110,98 @@ def main():
         box_color = (255, 0, 0) # Blue (Idle)
 
         if results.hand_landmarks:
+            hand_lost_frames = 0
+            if hand_presence_start is None:
+                hand_presence_start = time.time()
+            
+            time_present = time.time() - hand_presence_start
+            is_warming_up = time_present < WARMUP_DELAY
+
             for hand_landmarks in results.hand_landmarks:
-                current_gesture = get_gesture(hand_landmarks)
+                # Coordinate Smoothing (EMA)
+                palm_center_x = (hand_landmarks[0].x + hand_landmarks[5].x + hand_landmarks[17].x) / 3
+                palm_center_y = (hand_landmarks[0].y + hand_landmarks[5].y + hand_landmarks[17].y) / 3
                 
-                # Bounding Box Calculation
+                if smoothed_x is None:
+                    smoothed_x, smoothed_y = palm_center_x, palm_center_y
+                else:
+                    smoothed_x = EMA_ALPHA * palm_center_x + (1 - EMA_ALPHA) * smoothed_x
+                    smoothed_y = EMA_ALPHA * palm_center_y + (1 - EMA_ALPHA) * smoothed_y
+                
+                # Bounding Box for Visuals
                 x_coords = [lm.x for lm in hand_landmarks]
                 y_coords = [lm.y for lm in hand_landmarks]
                 min_x, max_x = min(x_coords), max(x_coords)
                 min_y, max_y = min(y_coords), max(y_coords)
-                
-                # Robust Swipe detection
-                index_x = hand_landmarks[8].x # Index finger tip X (0 to 1)
-                
-                if time.time() - last_event_time < COOLDOWN:
-                    swipe_start_x = None
-                    box_color = (0, 255, 0) # Green (Just triggered/Cooldown)
-                else:
-                    if swipe_start_x is None:
-                        swipe_start_x = index_x
-                    else:
-                        diff = index_x - swipe_start_x
-                        # Change color if moving significant distance
-                        if abs(diff) > 0.05:
-                            box_color = (0, 255, 255) # Yellow (Moving)
-                            
-                        if diff > SWIPE_DISTANCE_THRESHOLD:
-                            current_gesture = "swipe_right"
-                            swipe_start_x = None
-                        elif diff < -SWIPE_DISTANCE_THRESHOLD:
-                            current_gesture = "swipe_left"
-                            swipe_start_x = None
-                
-                # Draw visual feedback
-                if DEBUG_WINDOW:
-                    # Draw Bounding Box
-                    cv2.rectangle(image, 
-                                  (int(min_x * w), int(min_y * h)), 
-                                  (int(max_x * w), int(max_y * h)), 
-                                  box_color, 2)
-                    
-                    if current_gesture:
-                        status_text = f"Gesture: {current_gesture.upper()}"
-                        cv2.putText(image, status_text, (50, 50), 
-                                    cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
 
-        # Trigger Action
-        if current_gesture and current_gesture != prev_gesture:
-            if time.time() - last_event_time > COOLDOWN:
-                trigger_action(current_gesture, use_extension=args.extension)
-                last_event_time = time.time()
-                prev_gesture = current_gesture
-        
-        if current_gesture is None:
-            prev_gesture = None
+                if is_warming_up:
+                    box_color = (255, 255, 255) # White
+                    status_text = "Warming up..."
+                    can_trigger = True 
+                    neutral_y = smoothed_y
+                else:
+                    # Vertical Limit Check
+                    if neutral_y is not None and abs(smoothed_y - neutral_y) > VERTICAL_LIMIT:
+                        box_color = (0, 0, 255) # Red
+                        status_text = "Move too vertical"
+                    else:
+                        # Zone Logic
+                        if NEUTRAL_ZONE[0] < smoothed_x < NEUTRAL_ZONE[1]:
+                            can_trigger = True
+                            neutral_y = smoothed_y 
+                            status_text = "Neutral (Center)"
+                            box_color = (255, 0, 0) # Blue
+                        elif smoothed_x < LEFT_ZONE:
+                            if can_trigger:
+                                current_gesture = "swipe_left"
+                                can_trigger = False
+                                last_event_time = time.time()
+                                box_color = (0, 255, 0) # Green
+                                trigger_action(current_gesture, use_extension=args.extension)
+                            elif time.time() - last_event_time > AUTO_REPEAT_DELAY:
+                                current_gesture = "swipe_left"
+                                last_event_time = time.time()
+                                box_color = (0, 255, 0) # Green
+                                status_text = "Scrolling Left..."
+                                trigger_action(current_gesture, use_extension=args.extension)
+                            else:
+                                box_color = (0, 255, 255) # Yellow
+                                status_text = "In Left Zone"
+                        elif smoothed_x > RIGHT_ZONE:
+                            if can_trigger:
+                                current_gesture = "swipe_right"
+                                can_trigger = False
+                                last_event_time = time.time()
+                                box_color = (0, 255, 0) # Green
+                                trigger_action(current_gesture, use_extension=args.extension)
+                            elif time.time() - last_event_time > AUTO_REPEAT_DELAY:
+                                current_gesture = "swipe_right"
+                                last_event_time = time.time()
+                                box_color = (0, 255, 0) # Green
+                                status_text = "Scrolling Right..."
+                                trigger_action(current_gesture, use_extension=args.extension)
+                            else:
+                                box_color = (0, 255, 255) # Yellow
+                                status_text = "In Right Zone"
+                
+                # Draw Visuals
+                if DEBUG_WINDOW:
+                    cv2.rectangle(image, (int(min_x*w), int(min_y*h)), (int(max_x*w), int(max_y*h)), box_color, 2)
+                    cv2.putText(image, status_text, (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.8, box_color, 2)
+                    if current_gesture:
+                        cv2.putText(image, f"ACTION: {current_gesture.upper()}", (50, 90), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+        else:
+            hand_lost_frames += 1
+            if hand_lost_frames > LOST_FRAME_LIMIT:
+                hand_presence_start = None
+                smoothed_x = None
+                smoothed_y = None
+                neutral_y = None
+                can_trigger = True
 
         if DEBUG_WINDOW:
             cv2.imshow('Air Gesture Preview', image)
             
-        # Check for keyboard input in the window
         key = cv2.waitKey(1) & 0xFF
         if key == 27 or key == ord('q'):
             break
