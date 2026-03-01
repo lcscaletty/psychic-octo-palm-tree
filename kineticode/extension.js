@@ -42,7 +42,6 @@ function showModePicker(context) {
         { label: "$(cloud-upload) Git Push Control", description: "Choose a gesture to trigger Git Push", id: 'push' },
         { label: "$(hand) Hand Control", description: "Zone-based tab navigation", id: 'hand' },
         { label: "$(person) Posture Control", description: "Scale font size based on your posture", id: 'posture' },
-        { label: "$(history) Undo Control", description: "Make an 'OK' sign (👌) to undo (Ctrl+Z)", id: 'undo' },
         { label: "$(eye) Face Control", description: "Wink to open a new tab", id: 'face' },
         { label: "$(files) Copy/Paste Control", description: "Fist to copy, Open hand to paste", id: 'copy_paste' }
     ];
@@ -123,12 +122,11 @@ function startDetection(context, modes) {
     const args = [scriptPath, '--extension', '--workspace', workspacePath, '--debug', debug.toString()];
     if (enablePreview) args.push('--stream');
 
-    if (modes.includes('macro') || modes.includes('hand') || modes.includes('copy_paste') || modes.includes('undo')) args.push('--hands');
+    if (modes.includes('macro') || modes.includes('hand') || modes.includes('copy_paste')) args.push('--hands');
     if (modes.includes('posture') || modes.includes('push')) args.push('--posture');
     if (modes.includes('tilt') || modes.includes('face')) args.push('--face');
     if (modes.includes('copy_paste')) args.push('--copy_paste');
     if (modes.includes('push')) args.push('--push');
-    if (modes.includes('undo')) args.push('--undo');
 
     childProcess = spawn(pythonCommand, args, {
         cwd: context.extensionPath
@@ -185,8 +183,6 @@ function startDetection(context, modes) {
                     vscode.window.showInformationMessage('Git Push confirmation timed out. Push aborted.');
                 } else if (msg.action === 'git_push') {
                     handlePushTrigger(msg);
-                } else if (msg.action === 'undo') {
-                    vscode.commands.executeCommand('undo');
                 } else if (msg.action === 'copy') {
                     vscode.commands.executeCommand('editor.action.clipboardCopyAction');
                 } else if (msg.action === 'paste') {

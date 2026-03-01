@@ -664,11 +664,6 @@ def main():
                         p2 = (int(fl[263].x * w), int(fl[263].y * h))
                         cv2.line(image, p1, p2, (255, 0, 255), 2)
             
-            if args.undo:
-                status_text = "UNDO READY" if time.time() - last_undo_time > 1.5 else "UNDO COOLDOWN"
-                if undo_state == UNDO_STATE_TOUCH: status_text = "TOUCHING"
-                cv2.putText(image, f"UNDO: {status_text}", (50, 460), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 165, 0), 2)
-
             if DEBUG_WINDOW:
                 cv2.imshow('Kineticode Control Hub', image)
                 if cv2.waitKey(1) & 0xFF == ord('q'): break
