@@ -28,6 +28,14 @@ FACE_EMA_ALPHA = 0.5
 SLOUCH_THRESHOLD = 0.85
 DROP_THRESHOLD = 0.05
 
+# Macro Gesture Cooldowns
+MACRO_COOLDOWN = 1.5
+
+# Tilt Settings
+TILT_RATIO_THRESHOLD = 0.25 # dy / distance_between_eyes (approx 15 degrees)
+TILT_COOLDOWN = 0.8
+last_tilt_time = 0
+
 # --- Global Handlers ---
 hand_landmarker = None
 pose_landmarker = None
@@ -44,6 +52,37 @@ def trigger_action(gesture, use_extension=False):
         elif gesture == "clap":
             pyautogui.hotkey('ctrl', 'n')
         print(f"Standalone Action: {gesture}")
+
+def get_finger_states(landmarks):
+    """Returns a list of 5 booleans [thumb, index, middle, ring, pinky] indicating if finger is UP."""
+    # Landmarks: 0: Wrist, 4: Thumb Tip, 8: Index Tip, 12: Middle Tip, 16: Ring Tip, 20: Pinky Tip
+    # For index/middle/ring/pinky: check if Tip y < Joint y (lower landmark index)
+    # Note: y decreases as we go up in the image.
+    finger_tips = [8, 12, 16, 20]
+    finger_joints = [6, 10, 14, 18] # PIP joints
+    
+    states = []
+    
+    # Thumb: Check if Tip is further from wrist than the base (approximate)
+    # Using x coordinate for thumb (assuming palm horizontal-ish) or distance
+    # Simpler: check if thumb tip is to the left/right of the palm? 
+    # Let's use distance from wrist for thumb
+    thumb_tip = landmarks[4]
+    thumb_base = landmarks[2]
+    wrist = landmarks[0]
+    
+    # Simple x-axis check for thumb (assuming palm facing camera)
+    # If Tip x is outside Joint2.x relative to wrist, it's out/up
+    if abs(thumb_tip.x - wrist.x) > abs(thumb_base.x - wrist.x):
+        states.append(True)
+    else:
+        states.append(False)
+        
+    for tip, joint in zip(finger_tips, finger_joints):
+        # Tip y < Joint y means finger is pointing up (higher in image)
+        states.append(landmarks[tip].y < landmarks[joint].y)
+        
+    return states
 
 def main():
     parser = argparse.ArgumentParser()
@@ -118,6 +157,8 @@ def main():
     right_blink_ema = 0
     wink_dwell_counter = 0
     WINK_DWELL_THRESHOLD = 3 # frames
+    last_macro_time = 0
+    last_tilt_time = 0
     last_stream_time = 0
     STREAM_FPS = 15
 
@@ -140,6 +181,7 @@ def main():
         image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
         mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=image_rgb)
         
+        current_time = time.time()
         current_gesture = None
         hand_status = "No Hand"
         hand_box_color = (128, 128, 128)
@@ -167,28 +209,27 @@ def main():
                     neutral_y = smoothed_y
                     hand_status = "Neutral"
                     hand_box_color = (255, 0, 0)
-                elif smoothed_x < LEFT_ZONE:
-                    gesture = "swipe_left"
-                    if can_trigger:
-                        can_trigger = False
-                        last_event_time = time.time()
-                        current_gesture = gesture
-                    elif time.time() - last_event_time > AUTO_REPEAT_DELAY:
-                        last_event_time = time.time()
-                        current_gesture = gesture
-                        hand_status = "Scrolling..."
-                    hand_box_color = (0, 255, 0)
-                elif smoothed_x > RIGHT_ZONE:
-                    gesture = "swipe_right"
-                    if can_trigger:
-                        can_trigger = False
-                        last_event_time = time.time()
-                        current_gesture = gesture
-                    elif time.time() - last_event_time > AUTO_REPEAT_DELAY:
-                        last_event_time = time.time()
-                        current_gesture = gesture
-                        hand_status = "Scrolling..."
-                    hand_box_color = (0, 255, 0)
+                # Removed horizontal swipe_left/right here to use head tilt instead
+                
+                # --- Macro Gesture Detection ---
+                if current_time - last_macro_time > MACRO_COOLDOWN:
+                    fingers = get_finger_states(hl)
+                    # states: [thumb, index, middle, ring, pinky]
+                    
+                    macro = None
+                    if fingers == [False, True, True, False, False]:
+                        macro = "gesture_peace"
+                    elif fingers == [False, True, False, False, True]:
+                        macro = "gesture_rock"
+                    elif fingers == [True, True, False, False, False]:
+                        macro = "gesture_l"
+                        
+                    if macro:
+                        last_macro_time = current_time
+                        trigger_action(macro, use_extension=args.extension)
+                        hand_status = f"MACRO: {macro}"
+                        hand_box_color = (255, 255, 0) # Gold
+
                 if current_gesture:
                     trigger_action(current_gesture, use_extension=args.extension)
             else:
@@ -251,6 +292,27 @@ def main():
                     wink_dwell_counter = 0
                     face_status = f"L:{left_blink_ema:.2f} R:{right_blink_ema:.2f}"
 
+                # --- Head Tilt Detection (Face Engine) ---
+                if face_results.face_landmarks and time.time() - last_tilt_time > TILT_COOLDOWN:
+                    fl = face_results.face_landmarks[0]
+                    # Left eye: 33, Right eye: 263
+                    lx, ly = fl[33].x, fl[33].y
+                    rx, ry = fl[263].x, fl[263].y
+                    
+                    dx = rx - lx
+                    dy = ry - ly # Right eye lower than left means positive (tilt left)
+                    dist = ((dx**2) + (dy**2))**0.5
+                    
+                    if dist > 0:
+                        tilt_ratio = dy / dist
+                        # Note: with image flipped, tilting head right makes right eye lower (dy > 0)
+                        # We want tilting right to trigger "swipe_right"
+                        if abs(tilt_ratio) > TILT_RATIO_THRESHOLD:
+                            last_tilt_time = time.time()
+                            gesture = "swipe_right" if tilt_ratio > 0 else "swipe_left"
+                            trigger_action(gesture, use_extension=args.extension)
+                            face_status = f"TILT: {gesture.upper()} ({tilt_ratio:.2f})"
+
         # 3. VISUALS
         if DEBUG_WINDOW:
             if args.hands:
@@ -264,6 +326,11 @@ def main():
                         min_x, max_x = min(x_coords), max(x_coords)
                         min_y, max_y = min(y_coords), max(y_coords)
                         cv2.rectangle(image, (int(min_x*w), int(min_y*h)), (int(max_x*w), int(max_y*h)), hand_box_color, 2)
+                        
+                        # Debug fingers
+                        states = get_finger_states(hl)
+                        f_str = "T:{} I:{} M:{} R:{} P:{}".format(*["U" if s else "D" for s in states])
+                        cv2.putText(image, f_str, (int(min_x*w), int(max_y*h)+20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
             if args.posture:
                 cv2.putText(image, f"POSE: {posture_status}", (50, 430), cv2.FONT_HERSHEY_SIMPLEX, 0.7, pose_color, 2)
                 if pose_results and pose_results.pose_landmarks:
@@ -289,6 +356,11 @@ def main():
                                           (int((min_ex-padding)*w), int((min_ey-padding)*h)), 
                                           (int((max_ex+padding)*w), int((max_ey+padding)*h)), 
                                           color, 2)
+                        # Draw Tilt Line
+                        fl = face_results.face_landmarks[0]
+                        p1 = (int(fl[33].x * w), int(fl[33].y * h))
+                        p2 = (int(fl[263].x * w), int(fl[263].y * h))
+                        cv2.line(image, p1, p2, (255, 0, 255), 2)
             
             if DEBUG_WINDOW:
                 cv2.imshow('Kineticode Control Hub', image)
