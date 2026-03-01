@@ -343,6 +343,7 @@ class KineticodeViewProvider {
                 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src vscode-resource: https: data:; script-src 'unsafe-inline'; style-src 'unsafe-inline';">
             </head>
             <body style="background: #1e1e1e; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; margin: 0; color: white; font-family: sans-serif;">
+                <div id="debug-overlay" style="position: absolute; top: 10px; left: 10px; background: rgba(0,0,0,0.7); padding: 5px; border-radius: 5px; font-family: monospace; display: none;">Frames: 0</div>
                 <img id="video-stream" style="width: 100%; max-height: 100vh; object-fit: contain; border: 1px solid #333; display: none;" src=""/>
                 <div id="placeholder" style="text-align: center; padding: 20px;">
                     <div style="font-size: 40px; margin-bottom: 10px;">📸</div>
@@ -351,14 +352,21 @@ class KineticodeViewProvider {
                 <script>
                     const img = document.getElementById('video-stream');
                     const placeholder = document.getElementById('placeholder');
+                    const debugOverlay = document.getElementById('debug-overlay');
+                    let frameCount = 0;
+                    
                     window.addEventListener('message', event => {
                         const message = event.data;
                         if (message.command === 'updateFrame') {
                             img.src = 'data:image/jpeg;base64,' + message.frame;
+                            frameCount++;
+                            debugOverlay.innerText = 'Frames Rcvd: ' + frameCount + ' | Len: ' + (message.frame ? message.frame.length : 0);
                             img.style.display = 'block';
+                            debugOverlay.style.display = 'block';
                             placeholder.style.display = 'none';
                         } else if (message.command === 'clear') {
                             img.style.display = 'none';
+                            debugOverlay.style.display = 'none';
                             img.src = '';
                             placeholder.style.display = 'block';
                         }
