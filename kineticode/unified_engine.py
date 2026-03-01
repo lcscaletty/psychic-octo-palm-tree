@@ -412,8 +412,16 @@ def main():
                             smoothed_ratio = 0.4 * ratio + 0.6 * smoothed_ratio if smoothed_ratio else ratio
                             
                             if push_state == PUSH_STATE_MONITORING:
-                                # Decrease in eye distance means pull away
-                                if smoothed_ratio < 0.85 and (current_time - last_push_time > PUSH_COOLDOWN):
+                                # Adaptive Drift: Slowly follow eye_dist if no gesture is happening
+                                if neutral_dist:
+                                    neutral_dist = 0.995 * neutral_dist + 0.005 * eye_dist
+                                else:
+                                    neutral_dist = eye_dist
+
+                                # Detection: Ignore if wrists are already high (prevents arm-raise trigger)
+                                wrists_low = pl[15].y > sy and pl[16].y > sy
+                                
+                                if smoothed_ratio < 0.80 and wrists_low and (current_time - last_push_time > PUSH_COOLDOWN):
                                     push_state = PUSH_STATE_AWAITING_CONFIRMATION
                                     confirmation_start_time = current_time
                                     if args.extension: print(json.dumps({"status": "awaiting_confirmation"}), flush=True)
