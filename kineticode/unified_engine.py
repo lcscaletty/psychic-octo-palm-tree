@@ -340,6 +340,9 @@ def main():
     frame_count = 0
     while cap.isOpened() and not shutdown_flag:
         success, image = cap.read()
+        loop_log.write(f"Read called: success={success}\n")
+        loop_log.flush()
+        
         if not success:
             consecutive_failures += 1
             if consecutive_failures > 30:
@@ -349,9 +352,8 @@ def main():
         consecutive_failures = 0
         
         frame_count += 1
-        if frame_count % 10 == 0:
-            loop_log.write(f"Grabbed frame {frame_count}, max_val={image.max()}\n")
-            loop_log.flush()
+        loop_log.write(f"Grabbed frame {frame_count}, max_val={image.max()}\n")
+        loop_log.flush()
         
         # Check if the camera is returning pure black frames (privacy shutter closed or virtual cam active)
         is_blank = image.max() < 15
