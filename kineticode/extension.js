@@ -52,18 +52,8 @@ function showModePicker(context) {
         if (selections && selections.length > 0) {
             const hasPush = selections.some(s => s.id === 'push');
             if (hasPush) {
-                const triggers = [
-                    { label: "$(screen-full) Physical Push", description: "Push computer away", id: 'physical_push' },
-                    { label: "$(zap) Clap", description: "Clap hands together", id: 'clap' },
-                    { label: "$(arrow-left) Swipe Left", description: "Move hand to left zone", id: 'swipe_left' },
-                    { label: "$(arrow-right) Swipe Right", description: "Move hand to right zone", id: 'swipe_right' }
-                ];
-                const triggerSelection = await vscode.window.showQuickPick(triggers, { placeHolder: 'Select Trigger Gesture for Git Push' });
-                if (triggerSelection) {
-                    await vscode.workspace.getConfiguration('airGesture').update('pushTrigger', triggerSelection.id, vscode.ConfigurationTarget.Global);
-                } else {
-                    return; // Cancelled
-                }
+                // Default to physical push as requested, no more sub-menu
+                await vscode.workspace.getConfiguration('airGesture').update('pushTrigger', 'physical_push', vscode.ConfigurationTarget.Global);
             }
             const ready = await checkDependencies();
             if (ready) {
@@ -152,16 +142,18 @@ function startDetection(context, modes) {
                 const msg = JSON.parse(line.trim());
                 if (msg.status === 'ready') {
                     vscode.window.showInformationMessage('Kineticode Started!');
-                } else if (msg.gesture) {
-                    handleGesture(msg.gesture);
-                    // Also handle push specific triggers if not in ready state
-                    if (modes.includes('push')) handlePushTrigger(msg);
+                } else if (msg.status === 'awaiting_confirmation') {
+                    vscode.window.showInformationMessage('Push Detected! Confirm by raising both hands.', 'Cancel Push').then(selection => {
+                        if (selection === 'Cancel Push') {
+                            vscode.window.showInformationMessage('Push aborted. Wait for timeout.');
+                        }
+                    });
+                } else if (msg.action === 'git_push') {
+                    handlePushTrigger(msg);
                 } else if (msg.posture) {
                     handlePosture(msg.posture);
                 } else if (msg.frame && cameraProvider) {
                     cameraProvider.updateFrame(msg.frame);
-                } else if (msg.action === 'git_push') {
-                    handlePushTrigger(msg);
                 } else if (msg.error) {
                     vscode.window.showErrorMessage(`Kineticode Error: ${msg.error}`);
                     stopDetection();
