@@ -200,9 +200,6 @@ def main():
     global DEBUG_WINDOW, hand_landmarker, pose_landmarker, face_landmarker, current_state
     DEBUG_WINDOW = args.debug == 'true'
 
-    if args.extension:
-        print(json.dumps({"status": "ready"}), flush=True)
-
     # Force dependencies
     if args.undo or args.copy_paste:
         args.hands = True
