@@ -185,11 +185,14 @@ function handleGesture(gesture) {
 
 function handlePosture(state) {
     const config = vscode.workspace.getConfiguration();
-    const currentSize = config.get('editor.fontSize');
     if (state === 'slouch') {
-        config.update('editor.fontSize', currentSize + 4, vscode.ConfigurationTarget.Global);
+        // Slouching makes font SMALL (penalty/nudge)
+        config.update('editor.fontSize', Math.max(8, originalFontSize - 4), vscode.ConfigurationTarget.Global);
+        vscode.window.setStatusBarMessage('🚨 POSTURE: Slouching! Shrinking font...', 2000);
     } else {
-        config.update('editor.fontSize', Math.max(12, currentSize - 4), vscode.ConfigurationTarget.Global);
+        // Upright restores font to BIG (normal)
+        config.update('editor.fontSize', originalFontSize, vscode.ConfigurationTarget.Global);
+        vscode.window.setStatusBarMessage('✅ POSTURE: Good! Restoring font...', 2000);
     }
 }
 
