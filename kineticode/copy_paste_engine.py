@@ -132,7 +132,7 @@ def main():
     
     parser = argparse.ArgumentParser(description='Copy/Paste Hand Engine')
     parser.add_argument('--extension', action='store_true', help='Run in extension mode')
-    parser.add_argument('--debug', type=str, choices=['true', 'false'], default='true', help='Show debug window')
+    parser.add_argument('--debug', type=str, choices=['true', 'false'], default='false', help='Show debug window')
     parser.add_argument('--workspace', type=str, default='', help='Ignored')
     parser.add_argument('--stream', action='store_true', help='Stream base64 frames to stdout')
     args, _ = parser.parse_known_args()

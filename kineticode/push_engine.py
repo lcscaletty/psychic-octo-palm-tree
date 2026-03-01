@@ -98,7 +98,7 @@ def perform_git_push(workspace_path):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--extension', action='store_true', help='Extension mode (JSON output)')
-    parser.add_argument('--debug', type=str, choices=['true', 'false'], default='true', help='Show debug window')
+    parser.add_argument('--debug', type=str, choices=['true', 'false'], default='false', help='Show debug window')
     parser.add_argument('--snap_threshold', type=float, default=0.05, help='Snap detection threshold')
     parser.add_argument('--workspace', type=str, default='', help='Target workspace path')
     parser.add_argument('--stream', action='store_true', help='Stream base64 frames to stdout')

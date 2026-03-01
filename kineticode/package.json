@@ -63,7 +63,7 @@
             "properties": {
                 "airGesture.debugWindow": {
                     "type": "boolean",
-                    "default": true,
+                    "default": false,
                     "description": "Show/hide the legacy OpenCV camera window (appears outside VS Code)."
                 },
                 "airGesture.enablePreview": {

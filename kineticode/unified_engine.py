@@ -185,12 +185,13 @@ def is_open(hl):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--extension', action='store_true')
-    parser.add_argument('--debug', type=str, choices=['true', 'false'], default='true', help='Show debug window')
+    parser.add_argument('--debug', type=str, choices=['true', 'false'], default='false', help='Show debug window')
     parser.add_argument('--hands', action='store_true', help='Enable Hand Tracking')
     parser.add_argument('--posture', action='store_true', help='Enable Posture Tracking')
     parser.add_argument('--face', action='store_true', help='Enable Face/Wink Tracking')
     parser.add_argument('--copy_paste', action='store_true', help='Enable Copy/Paste Tracking')
     parser.add_argument('--push', action='store_true', help='Enable Push-to-GitHub Tracking')
+    parser.add_argument('--undo', action='store_true', help='Enable Undo (Head Tap) Tracking')
     parser.add_argument('--stream', action='store_true', help='Stream base64 frames to stdout')
     parser.add_argument('--workspace', type=str, default='', help='Target workspace path')
     parser.add_argument('--snap_threshold', type=float, default=0.05, help='Snap detection threshold')
@@ -205,7 +206,7 @@ def main():
         hand_options = vision.HandLandmarkerOptions(base_options=base_hand, num_hands=2)
         hand_landmarker = vision.HandLandmarker.create_from_options(hand_options)
     
-    if args.posture:
+    if args.posture or args.push:
         base_pose = python.BaseOptions(model_asset_path=POSE_MODEL)
         pose_options = vision.PoseLandmarkerOptions(base_options=base_pose, num_poses=1)
         pose_landmarker = vision.PoseLandmarker.create_from_options(pose_options)
@@ -223,7 +224,27 @@ def main():
     cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
     if not cap.isOpened() or cap.read()[0] == False:
         cap.release()
-        cap = cv2.VideoCapture(0)
+        
+        cap = None
+        for cam_idx in range(5):
+            test_cap = cv2.VideoCapture(cam_idx, cv2.CAP_DSHOW)
+            if test_cap.isOpened():
+                valid = False
+                for _ in range(10):
+                    success, img = test_cap.read()
+                    if success and img is not None and img.max() > 10:
+                        valid = True
+                        break
+                    time.sleep(0.1)
+                if valid:
+                    cap = test_cap
+                    break
+                test_cap.release()
+            
+    if cap is None:
+        test_cap = cv2.VideoCapture(0)
+        if test_cap.isOpened():
+            cap = test_cap
     
     if not cap.isOpened():
         print(json.dumps({"error": "Webcam not found or busy"}), flush=True)
@@ -288,6 +309,13 @@ def main():
     PUSH_COOLDOWN = 5.0
     WARMUP_TIME = 2.0
 
+    # Undo specific state
+    UNDO_STATE_IDLE = "IDLE"
+    UNDO_STATE_TOUCH = "TOUCH"
+    undo_state = UNDO_STATE_IDLE
+    last_undo_time = 0
+    undo_touch_start = 0
+
     consecutive_failures = 0
     while cap.isOpened() and not shutdown_flag:
         success, image = cap.read()
@@ -298,6 +326,16 @@ def main():
                 break
             continue
         consecutive_failures = 0
+        
+        # Check if the camera is returning pure black frames (privacy shutter closed or virtual cam active)
+        is_blank = image.max() < 15
+        if is_blank:
+            # Create a blank gray canvas so text is highly visible
+            image[:, :] = (50, 50, 50)
+            cv2.putText(image, "CAMERA FEED BLACK", (50, 200), cv2.FONT_HERSHEY_DUPLEX, 1.0, (0, 0, 255), 2)
+            cv2.putText(image, "Check privacy shutter or other apps", (50, 240), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 1)
+            if args.extension:
+                print(json.dumps({"error": "Camera feed is black. Check privacy shutter or OBS Virtual Camera."}), flush=True)
 
         image = cv2.flip(image, 1)
         h, w, _ = image.shape
@@ -400,6 +438,30 @@ def main():
                                 hand_box_color = (0, 255, 0)
                                 was_fist_previously = False
 
+                # --- Undo Detection ---
+                if args.undo:
+                    fingers = get_finger_states(hl)
+                    # Check distance between thumb tip (4) and index tip (8)
+                    dist_thumb_index = ((hl[4].x - hl[8].x)**2 + (hl[4].y - hl[8].y)**2)**0.5
+                    hand_size = ((hl[0].x - hl[9].x)**2 + (hl[0].y - hl[9].y)**2)**0.5
+                    
+                    # OK Gesture: Thumb/index touching, middle/ring/pinky extended
+                    # get_finger_states returns True for extended
+                    if dist_thumb_index < hand_size * 0.4 and fingers[2:] == [True, True, True]:
+                        if undo_state == UNDO_STATE_IDLE:
+                            undo_state = UNDO_STATE_TOUCH
+                            undo_touch_start = current_time
+                        elif current_time - undo_touch_start > 0.4: # Hold for a short duration
+                            if current_time - last_undo_time > 1.5:
+                                if args.extension:
+                                    print(json.dumps({"action": "undo"}), flush=True)
+                                last_undo_time = current_time
+                                hand_status = "UNDO: OK GESTURE"
+                                hand_box_color = (0, 255, 0)
+                                undo_state = UNDO_STATE_IDLE # Reset state after firing
+                    else:
+                        undo_state = UNDO_STATE_IDLE
+
                 if current_gesture:
                     trigger_action(current_gesture, use_extension=args.extension)
             else:
@@ -413,8 +475,8 @@ def main():
             if pose_results.pose_landmarks:
                 try:
                     for pl in pose_results.pose_landmarks:
-                        if len(pl) < 17:
-                            continue # Skip if we don't have enough landmarks for shoulders/wrists
+                        if len(pl) < 21:
+                            continue # Skip if we don't have enough landmarks for fingers
                         # Common landmarks
                         ey = (pl[2].y + pl[5].y) / 2
                         sy = (pl[11].y + pl[12].y) / 2
@@ -472,6 +534,7 @@ def main():
                                         if args.extension:
                                             print(json.dumps({"status": "push_aborted"}), flush=True)
                                         push_state = PUSH_STATE_MONITORING
+
                 except Exception as e:
                     print(json.dumps({"error": f"Pose Engine Crash: {str(e)}"}), flush=True)
 
@@ -574,6 +637,11 @@ def main():
                         p2 = (int(fl[263].x * w), int(fl[263].y * h))
                         cv2.line(image, p1, p2, (255, 0, 255), 2)
             
+            if args.undo:
+                status_text = "UNDO READY" if time.time() - last_undo_time > 1.5 else "UNDO COOLDOWN"
+                if undo_state == UNDO_STATE_TOUCH: status_text = "TOUCHING"
+                cv2.putText(image, f"UNDO: {status_text}", (50, 460), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 165, 0), 2)
+
             if DEBUG_WINDOW:
                 cv2.imshow('Kineticode Control Hub', image)
                 if cv2.waitKey(1) & 0xFF == ord('q'): break
