@@ -339,8 +339,11 @@ class KineticodeViewProvider {
         return `
             <!DOCTYPE html>
             <html>
+            <head>
+                <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src vscode-resource: https: data:; script-src 'unsafe-inline'; style-src 'unsafe-inline';">
+            </head>
             <body style="background: #1e1e1e; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; margin: 0; color: white; font-family: sans-serif;">
-                <img id="video-stream" style="width: 100%; border: 1px solid #333; display: none;" src=""/>
+                <img id="video-stream" style="width: 100%; max-height: 100vh; object-fit: contain; border: 1px solid #333; display: none;" src=""/>
                 <div id="placeholder" style="text-align: center; padding: 20px;">
                     <div style="font-size: 40px; margin-bottom: 10px;">📸</div>
                     <div>Select a mode to start the camera feed</div>
