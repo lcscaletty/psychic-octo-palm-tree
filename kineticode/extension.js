@@ -42,7 +42,8 @@ function showModePicker(context) {
         { label: "$(cloud-upload) Git Push Control", description: "Choose a gesture to trigger Git Push", id: 'push' },
         { label: "$(hand) Hand Control", description: "Zone-based tab navigation", id: 'hand' },
         { label: "$(person) Posture Control", description: "Font scaling via posture", id: 'posture' },
-        { label: "$(eye) Face Control", description: "Wink to add a new tab", id: 'face' }
+        { label: "$(eye) Face Control", description: "Wink to add a new tab", id: 'face' },
+        { label: "$(files) Copy/Paste Control", description: "Fist to copy, Open hand to paste", id: 'copy_paste' }
     ];
 
     vscode.window.showQuickPick(items, {
@@ -102,11 +103,11 @@ function startDetection(context, modes) {
 
     activeMode = modes.join(' + ');
 
-    // Determine which script to run. If 'push' is included, we use push_engine.py 
-    // for now because unified_engine.py doesn't have the Git logic I built.
-    // If multiple are selected including push, we'll need to decide. 
-    // To keep it simple and preserve features, if 'push' is in modes, we prioritize it.
-    let scriptName = modes.includes('push') ? 'push_engine.py' : 'unified_engine.py';
+    // Determine which script to run.
+    let scriptName = 'unified_engine.py';
+    if (modes.includes('copy_paste')) scriptName = 'copy_paste_engine.py';
+    else if (modes.includes('push')) scriptName = 'push_engine.py';
+
     const scriptPath = path.join(context.extensionPath, scriptName);
     const pythonCommand = process.platform === 'win32' ? 'python' : 'python3';
 
@@ -130,6 +131,29 @@ function startDetection(context, modes) {
         cwd: context.extensionPath
     });
 
+    // --- Selection State Tracker for Copy/Paste Engine ---
+    const selectionListener = vscode.window.onDidChangeTextEditorSelection(e => {
+        if (!childProcess || !activeMode.includes('copy_paste')) return;
+
+        let hasSelection = false;
+        // Check if any selection has actual length
+        for (const selection of e.selections) {
+            if (!selection.isEmpty) {
+                hasSelection = true;
+                break;
+            }
+        }
+
+        // Send state to python engine via stdin
+        try {
+            const msg = JSON.stringify({ event: 'selection_changed', hasSelection: hasSelection });
+            childProcess.stdin.write(msg + '\n');
+        } catch (err) {
+            console.error("Failed to send selection state to engine", err);
+        }
+    });
+    context.subscriptions.push(selectionListener);
+
     let lineBuffer = '';
     childProcess.stdout.on('data', (data) => {
         lineBuffer += data.toString();
@@ -150,6 +174,12 @@ function startDetection(context, modes) {
                     });
                 } else if (msg.action === 'git_push') {
                     handlePushTrigger(msg);
+                } else if (msg.action === 'copy') {
+                    vscode.commands.executeCommand('editor.action.clipboardCopyAction');
+                    vscode.window.showInformationMessage('Kineticode: Text Copied!', 'OK');
+                } else if (msg.action === 'paste') {
+                    vscode.commands.executeCommand('editor.action.clipboardPasteAction');
+                    vscode.window.showInformationMessage('Kineticode: Text Pasted!', 'OK');
                 } else if (msg.posture) {
                     handlePosture(msg.posture);
                 } else if (msg.frame && cameraProvider) {
