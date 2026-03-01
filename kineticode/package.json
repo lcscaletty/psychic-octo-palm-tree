@@ -2,7 +2,7 @@
     "name": "kineticode",
     "displayName": "Kineticode: Air Gesture Control",
     "description": "Control VS Code with hand gestures and posture monitoring.",
-    "version": "0.1.3",
+    "version": "0.1.5",
     "publisher": "Kineticode1",
     "license": "MIT",
     "qna": false,
@@ -38,6 +38,14 @@
             {
                 "command": "air-gesture.stop",
                 "title": "Kineticode: Stop Detection"
+            },
+            {
+                "command": "air-gesture.showLogs",
+                "title": "Kineticode: Show Debug Logs"
+            },
+            {
+                "command": "air-gesture.diagnostics",
+                "title": "Kineticode: Run Diagnostics"
             }
         ],
         "viewsContainers": {
@@ -86,6 +94,11 @@
                     ],
                     "default": "physical_push",
                     "description": "The gesture that triggers a Git Push when in Push Control mode."
+                },
+                "airGesture.pythonPath": {
+                    "type": "string",
+                    "default": "python",
+                    "description": "Custom path to the Python executable. Default is 'python' or 'python3'."
                 }
             }
         }

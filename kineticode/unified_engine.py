@@ -12,42 +12,27 @@ import pyautogui
 import base64
 import threading
 
-def perform_git_push_async(workspace_path, script_dir, ratio, is_extension):
-    """
-    Executes the git sequence asynchronously to avoid freezing the camera.
-    """
-    def task():
-        print("\n--- ATTEMPTING GIT PUSH ---", flush=True)
-        try:
-            target_dir = workspace_path if workspace_path else script_dir
-            root_res = subprocess.run(["git", "rev-parse", "--show-toplevel"], 
-                                   cwd=target_dir, capture_output=True, text=True, check=True)
-            git_root = root_res.stdout.strip()
-            
-            subprocess.run(["git", "add", "."], cwd=git_root, check=True)
-            
-            status_res = subprocess.run(["git", "status", "--porcelain"], 
-                                     cwd=git_root, capture_output=True, text=True, check=True)
-            if not status_res.stdout.strip():
-                print("--- NOTHING TO COMMIT ---", flush=True)
-            else:
-                commit_msg = f"Auto-push from Kineticode Push Engine: {time.strftime('%Y-%m-%d %H:%M:%S')}"
-                subprocess.run(["git", "commit", "-m", commit_msg], cwd=git_root, check=True)
-            
-            subprocess.run(["git", "push"], cwd=git_root, check=True, timeout=10)
-            print("--- GIT PUSH SUCCESSFUL ---", flush=True)
-            if is_extension:
-                print(json.dumps({"action": "git_push", "success": True, "ratio": ratio}), flush=True)
-        except subprocess.TimeoutExpired:
-            print("--- GIT ERROR: Timeout (May need credentials) ---", flush=True)
-            if is_extension:
-                print(json.dumps({"action": "git_push", "success": False, "ratio": ratio, "error": "Timeout"}), flush=True)
-        except Exception as e:
-            print(f"--- GIT ERROR: {e} ---", flush=True)
-            if is_extension:
-                print(json.dumps({"action": "git_push", "success": False, "ratio": ratio, "error": str(e)}), flush=True)
+HAND_MODEL = None
+POSE_MODEL = None
+FACE_MODEL = None
 
-    threading.Thread(target=task, daemon=True).start()
+# Global state for push lock-out
+last_push_trigger_time = 0.0
+PUSH_LOCKOUT_DURATION = 15.0 # Seconds to ignore push gestures after a trigger
+
+def perform_git_push_trigger(is_extension):
+    """
+    Signals the VS Code extension to perform the Git push sequence.
+    """
+    global last_push_trigger_time
+    last_push_trigger_time = time.time()
+    
+    if is_extension:
+        # Simple signal for the extension to take over the Git work
+        print(json.dumps({"action": "git_push_trigger"}), flush=True)
+    else:
+        print("\n--- PUSH GESTURE DETECTED ---", flush=True)
+        print("Note: In standalone mode, please run git commands manually.", flush=True)
 
 # --- Configuration ---
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -205,7 +190,7 @@ def main():
         hand_options = vision.HandLandmarkerOptions(base_options=base_hand, num_hands=2)
         hand_landmarker = vision.HandLandmarker.create_from_options(hand_options)
     
-    if args.posture:
+    if args.posture or args.push:
         base_pose = python.BaseOptions(model_asset_path=POSE_MODEL)
         pose_options = vision.PoseLandmarkerOptions(base_options=base_pose, num_poses=1)
         pose_landmarker = vision.PoseLandmarker.create_from_options(pose_options)
@@ -280,11 +265,12 @@ def main():
     push_state = PUSH_STATE_MONITORING
     
     neutral_dist = None
+    smoothed_ratio = None
     last_push_time = 0
     push_start_time = time.time()
     confirmation_start_time = 0
     CONFIRM_TIMEOUT = 10.0 # 10 seconds to confirm
-    PUSH_THRESHOLD = 0.85  # Current head size < 85% of neutral = Push detected
+    PUSH_THRESHOLD = 0.82  # Current head size < 82% of neutral = Push detected
     PUSH_COOLDOWN = 5.0
     WARMUP_TIME = 2.0
 
@@ -310,9 +296,19 @@ def main():
         hand_box_color = (128, 128, 128)
         posture_status = "Analyzing..."
         pose_color = (255, 0, 0)
+        
+        # Initialize results to None each frame to prevent NameErrors or stale data crashes
+        hand_results = None
+        pose_results = None
+        face_results = None
+        
         if args.hands and hand_landmarker:
-            hand_results = hand_landmarker.detect(mp_image)
-            if hand_results.hand_landmarks:
+            try:
+                hand_results = hand_landmarker.detect(mp_image)
+            except Exception as e:
+                print(json.dumps({"error": f"Hand Engine Error: {str(e)}"}), flush=True)
+            
+            if hand_results and hand_results.hand_landmarks:
                 if hand_presence_start is None: hand_presence_start = time.time()
 
                 # Primary Hand (for spikes/scrolling)
@@ -409,8 +405,12 @@ def main():
 
         # 2. PROCESS POSE AND PUSH
         if (args.posture or args.push) and pose_landmarker and current_state != STATE_AWAITING_COPY:
-            pose_results = pose_landmarker.detect(mp_image)
-            if pose_results.pose_landmarks:
+            try:
+                pose_results = pose_landmarker.detect(mp_image)
+            except Exception as e:
+                print(json.dumps({"error": f"Pose Engine Error: {str(e)}"}), flush=True)
+            
+            if pose_results and pose_results.pose_landmarks:
                 try:
                     for pl in pose_results.pose_landmarks:
                         if len(pl) < 17:
@@ -440,46 +440,65 @@ def main():
 
                             if state != current_posture:
                                 current_posture = state
-                                if args.extension:
+                                if args.posture and args.extension:
                                     print(json.dumps({"posture": current_posture}), flush=True)
 
                         if args.push:
-                            # Warmup phase
-                            if time.time() - push_start_time < WARMUP_TIME:
-                                if neutral_dist is None: neutral_dist = eye_dist
-                                else: neutral_dist = 0.1 * eye_dist + 0.9 * neutral_dist
+                            # 1. Check for lock-out (don't check for pushes if we just triggered one)
+                            if time.time() - last_push_trigger_time < PUSH_LOCKOUT_DURATION:
+                                push_state = PUSH_STATE_MONITORING # Reset to monitoring just in case
                             else:
-                                ratio = eye_dist / neutral_dist if neutral_dist else 1.0
-                                if push_state == PUSH_STATE_MONITORING:
-                                    if ratio < PUSH_THRESHOLD and (time.time() - last_push_time > PUSH_COOLDOWN):
-                                        push_state = PUSH_STATE_AWAITING_CONFIRMATION
-                                        confirmation_start_time = time.time()
-                                        if args.extension:
-                                            print(json.dumps({"status": "awaiting_confirmation"}), flush=True)
-                                
-                                elif push_state == PUSH_STATE_AWAITING_CONFIRMATION:
-                                    # For Y axis, smaller is higher up. Hands higher than shoulders = <
-                                    hands_up = lw_y < sy and rw_y < sy
-                                    elapsed = time.time() - confirmation_start_time
+                                # Warmup phase
+                                if time.time() - push_start_time < WARMUP_TIME:
+                                    if neutral_dist is None: neutral_dist = eye_dist
+                                    else: neutral_dist = 0.1 * eye_dist + 0.9 * neutral_dist
+                                else:
+                                    ratio = eye_dist / neutral_dist if neutral_dist else 1.0
+                                    if smoothed_ratio is None:
+                                        smoothed_ratio = ratio
+                                    else:
+                                        # Smooth out the ratio so micro-jitters or head tilts don't trigger the push instantly
+                                        smoothed_ratio = 0.4 * ratio + 0.6 * smoothed_ratio
+
+                                    if push_state == PUSH_STATE_MONITORING:
+                                        if smoothed_ratio < PUSH_THRESHOLD and (time.time() - last_push_time > PUSH_COOLDOWN):
+                                            push_state = PUSH_STATE_AWAITING_CONFIRMATION
+                                            confirmation_start_time = time.time()
+                                            if args.extension:
+                                                print(json.dumps({"status": "awaiting_confirmation"}), flush=True)
                                     
-                                    if hands_up:
-                                        if args.extension:
-                                            print(json.dumps({"status": "pushing_in_progress"}), flush=True)
-                                        perform_git_push_async(args.workspace, SCRIPT_DIR, ratio, args.extension)
-                                        last_push_time = time.time()
-                                        push_state = PUSH_STATE_MONITORING
-                                    elif elapsed > CONFIRM_TIMEOUT:
-                                        if args.extension:
-                                            print(json.dumps({"status": "push_aborted"}), flush=True)
-                                        push_state = PUSH_STATE_MONITORING
+                                    elif push_state == PUSH_STATE_AWAITING_CONFIRMATION:
+                                        # For Y axis, smaller is higher up. Hands higher than shoulders = <
+                                        lw_vis = pl[15].visibility
+                                        rw_vis = pl[16].visibility
+                                        
+                                        # Relaxed visibility slightly for better reliability
+                                        hands_up = (lw_vis > 0.4 and rw_vis > 0.4) and (lw_y < sy and rw_y < sy)
+                                        elapsed = time.time() - confirmation_start_time
+                                        
+                                        if hands_up:
+                                            if args.extension:
+                                                print(json.dumps({"status": "pushing_in_progress"}), flush=True)
+                                            # ACTIVATE EXTENSION TERMINAL PUSH
+                                            perform_git_push_trigger(args.extension)
+                                            last_push_time = time.time()
+                                            push_state = PUSH_STATE_MONITORING
+                                        elif elapsed > CONFIRM_TIMEOUT:
+                                            if args.extension:
+                                                print(json.dumps({"status": "push_aborted"}), flush=True)
+                                            push_state = PUSH_STATE_MONITORING
                 except Exception as e:
                     print(json.dumps({"error": f"Pose Engine Crash: {str(e)}"}), flush=True)
 
         # 3. PROCESS FACE (Wink)
         face_status = "Analyzing Face..."
         if args.face and face_landmarker and current_state != STATE_AWAITING_COPY:
-            face_results = face_landmarker.detect(mp_image)
-            if face_results.face_blendshapes:
+            try:
+                face_results = face_landmarker.detect(mp_image)
+            except Exception as e:
+                print(json.dumps({"error": f"Face Engine Error: {str(e)}"}), flush=True)
+                
+            if face_results and face_results.face_blendshapes:
                 shapes = {c.category_name: c.score for c in face_results.face_blendshapes[0]}
                 
                 curr_left = shapes.get('eyeBlinkLeft', 0)
@@ -555,28 +574,24 @@ def main():
                 if face_results and face_results.face_landmarks:
                     for fl in face_results.face_landmarks:
                         # Eye Landmark Indices (approx)
-                        # Left Eye: 33, 133, 159, 145
-                        # Right Eye: 362, 263, 386, 374
                         for eye_indices, color in [([33, 133, 159, 145], (0, 255, 255)), ([362, 263, 386, 374], (255, 255, 0))]:
                             ex_coords = [fl[i].x for i in eye_indices]
                             ey_coords = [fl[i].y for i in eye_indices]
                             min_ex, max_ex = min(ex_coords), max(ex_coords)
                             min_ey, max_ey = min(ey_coords), max(ey_coords)
-                            # Add some padding
                             padding = 0.02
-                            cv2.rectangle(image, 
-                                          (int((min_ex-padding)*w), int((min_ey-padding)*h)), 
-                                          (int((max_ex+padding)*w), int((max_ey+padding)*h)), 
-                                          color, 2)
+                            cv2.rectangle(image, (int((min_ex-padding)*w), int((min_ey-padding)*h)), (int((max_ex+padding)*w), int((max_ey+padding)*h)), color, 2)
                         # Draw Tilt Line
                         fl = face_results.face_landmarks[0]
-                        p1 = (int(fl[33].x * w), int(fl[33].y * h))
-                        p2 = (int(fl[263].x * w), int(fl[263].y * h))
+                        p1, p2 = (int(fl[33].x*w), int(fl[33].y*h)), (int(fl[263].x*w), int(fl[263].y*h))
                         cv2.line(image, p1, p2, (255, 0, 255), 2)
             
-            if DEBUG_WINDOW:
-                cv2.imshow('Kineticode Control Hub', image)
-                if cv2.waitKey(1) & 0xFF == ord('q'): break
+            # 3.5 FPS Counter
+            fps = 1.0 / (time.time() - current_time) if (time.time() - current_time) > 0 else 0
+            cv2.putText(image, f"FPS: {fps:.1f}", (w - 150, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+            
+            cv2.imshow('Kineticode Control Hub', image)
+            if cv2.waitKey(1) & 0xFF == ord('q'): break
 
         # 4. STREAM TO WEBVIEW
         if args.stream and time.time() - last_stream_time > (1.0 / STREAM_FPS):

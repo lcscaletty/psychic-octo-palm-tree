@@ -1,34 +1,45 @@
 const vscode = require('vscode');
 const { spawn } = require('child_process');
 const path = require('path');
+const fs = require('fs');
 
 let childProcess = null;
 let mainStatusBarItem = null;
 let cameraProvider = null;
+let outputChannel = null;
 let originalFontSize = 14;
 let activeMode = null;
 
 function activate(context) {
-    console.log('Kineticode Extension is now active!');
+    // 1. Initialize logs IMMEDIATELY
+    outputChannel = vscode.window.createOutputChannel("Kineticode Logs");
+    outputChannel.appendLine("Kineticode: Activation starting...");
 
-    mainStatusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
-    mainStatusBarItem.show();
-    updateStatusBar();
+    try {
+        mainStatusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
+        mainStatusBarItem.show();
+        updateStatusBar();
 
-    cameraProvider = new KineticodeViewProvider(context.extensionUri);
-    context.subscriptions.push(
-        vscode.window.registerWebviewViewProvider('kineticode.cameraView', cameraProvider)
-    );
+        cameraProvider = new KineticodeViewProvider(context.extensionUri);
+        context.subscriptions.push(
+            vscode.window.registerWebviewViewProvider('kineticode.cameraView', cameraProvider)
+        );
 
-    const selectModeCommand = vscode.commands.registerCommand('air-gesture.selectMode', () => {
-        showModePicker(context);
-    });
+        // Register commands immediately
+        context.subscriptions.push(
+            vscode.commands.registerCommand('air-gesture.selectMode', () => showModePicker(context)),
+            vscode.commands.registerCommand('air-gesture.stop', () => stopDetection()),
+            vscode.commands.registerCommand('air-gesture.showLogs', () => { if (outputChannel) outputChannel.show(); }),
+            vscode.commands.registerCommand('air-gesture.diagnostics', () => runDiagnostics())
+        );
 
-    const stopCommand = vscode.commands.registerCommand('air-gesture.stop', () => {
-        stopDetection();
-    });
+        outputChannel.appendLine("Kineticode: Commands registered successfully.");
+        console.log('Kineticode Extension is now active!');
 
-    context.subscriptions.push(selectModeCommand, stopCommand, mainStatusBarItem);
+    } catch (err) {
+        if (outputChannel) outputChannel.appendLine(`Kineticode: CRITICAL ACTIVATION ERROR: ${err.message}`);
+        vscode.window.showErrorMessage(`Kineticode failed to activate: ${err.message}`);
+    }
 }
 
 function showModePicker(context) {
@@ -41,7 +52,6 @@ function showModePicker(context) {
         { label: "$(sync) Tilt Navigation", description: "Switch tabs by tilting your head left/right", id: 'tilt' },
         { label: "$(cloud-upload) Git Push Control", description: "Choose a gesture to trigger Git Push", id: 'push' },
         { label: "$(hand) Hand Control", description: "Zone-based tab navigation", id: 'hand' },
-        { label: "$(person) Posture Control", description: "Scale font size based on your posture", id: 'posture' },
         { label: "$(eye) Face Control", description: "Wink to open a new tab", id: 'face' },
         { label: "$(files) Copy/Paste Control", description: "Fist to copy, Open hand to paste", id: 'copy_paste' }
     ];
@@ -105,15 +115,22 @@ function startDetection(context, modes) {
 
     // Determine which script to run. ALWAYS use unified engine now.
     const scriptName = 'unified_engine.py';
-
     const scriptPath = path.join(context.extensionPath, scriptName);
-    const pythonCommand = process.platform === 'win32' ? 'python' : 'python3';
 
-    if (modes.includes('posture')) {
-        originalFontSize = vscode.workspace.getConfiguration('editor').get('fontSize');
+    // --- ISOLATED PYTHON DISCOVERY ---
+    // We ignore 'python.defaultInterpreterPath' to avoid triggering the MS Python extension's broken logic.
+    const config = vscode.workspace.getConfiguration('airGesture');
+    let pythonCommand = config.get('pythonPath') || (process.platform === 'win32' ? 'python' : 'python3');
+
+    outputChannel.appendLine(`Kineticode: Attempting to start with Python: ${pythonCommand}`);
+
+    if (path.isAbsolute(pythonCommand) && !fs.existsSync(pythonCommand)) {
+        outputChannel.appendLine(`Kineticode: Absolute path ${pythonCommand} not found. Falling back to system default.`);
+        pythonCommand = process.platform === 'win32' ? 'python' : 'python3';
     }
 
-    const config = vscode.workspace.getConfiguration('airGesture');
+    // Original Font Size removed (Posture mode disabled)
+
     const debug = config.get('debugWindow', false);
     const enablePreview = config.get('enablePreview', true);
 
@@ -124,13 +141,29 @@ function startDetection(context, modes) {
 
     // Enable relevant engines based on selected modes
     if (modes.includes('macro') || modes.includes('hand') || modes.includes('copy_paste')) args.push('--hands');
-    if (modes.includes('posture') || modes.includes('push')) args.push('--posture');
+    if (modes.includes('posture')) args.push('--posture');
     if (modes.includes('tilt') || modes.includes('face')) args.push('--face');
     if (modes.includes('copy_paste')) args.push('--copy_paste');
     if (modes.includes('push')) args.push('--push');
 
+    outputChannel.appendLine(`Kineticode: Command = ${pythonCommand}`);
+    outputChannel.appendLine(`Kineticode: Args = ${args.join(' ')}`);
+
     childProcess = spawn(pythonCommand, args, {
         cwd: context.extensionPath
+    });
+
+    childProcess.on('error', (err) => {
+        outputChannel.appendLine(`Kineticode: SPAWN ERROR: ${err.message}`);
+        outputChannel.show(); // POP UP LOGS ON FAILURE
+        vscode.window.showErrorMessage(`Kineticode: Failed to start Python engine (${err.message}). Please ensure Python is installed and in your PATH.`);
+        stopDetection();
+    });
+
+    childProcess.stderr.on('data', (data) => {
+        const str = data.toString();
+        console.error(`Python Engine Error: ${str}`);
+        if (outputChannel) outputChannel.appendLine(`[STDERR]: ${str.trim()}`);
     });
 
     // --- Selection State Tracker for Copy/Paste Engine ---
@@ -163,9 +196,17 @@ function startDetection(context, modes) {
         lineBuffer = lines.pop();
 
         lines.forEach(line => {
-            if (!line.trim()) return;
+            const trimmed = line.trim();
+            if (!trimmed) return;
+
+            // --- LOG FILTERING ---
+            // Only log if it's NOT a massive binary/coordinate message
+            if (outputChannel && !trimmed.includes('"frame":') && !trimmed.includes('"pose":') && !trimmed.includes('"eye":')) {
+                outputChannel.appendLine(`[STDOUT]: ${trimmed}`);
+            }
+
             try {
-                const msg = JSON.parse(line.trim());
+                const msg = JSON.parse(trimmed);
                 if (msg.status === 'ready') {
                     vscode.window.showInformationMessage('Kineticode Started!');
                 } else if (msg.gesture) {
@@ -180,22 +221,24 @@ function startDetection(context, modes) {
                     vscode.window.showInformationMessage('Hands up detected! 🚀 Initiating Git Push...');
                 } else if (msg.status === 'push_aborted') {
                     vscode.window.showInformationMessage('Git Push confirmation timed out. Push aborted.');
-                } else if (msg.action === 'git_push') {
+                } else if (msg.action === 'git_push_trigger') {
                     handlePushTrigger(msg);
                 } else if (msg.action === 'copy') {
                     vscode.commands.executeCommand('editor.action.clipboardCopyAction');
                 } else if (msg.action === 'paste') {
                     vscode.commands.executeCommand('editor.action.clipboardPasteAction');
                 } else if (msg.posture) {
-                    handlePosture(msg.posture);
+                    // Posture handling disabled
+                    // handlePosture(msg.posture);
                 } else if (msg.frame && cameraProvider) {
                     cameraProvider.updateFrame(msg.frame);
                 } else if (msg.error) {
                     vscode.window.showErrorMessage(`Kineticode Error: ${msg.error}`);
+                    outputChannel.show(); // POP UP LOGS ON ENGINE ERROR
                     stopDetection();
                 }
             } catch (e) {
-                console.log(`Engine Output: ${line}`);
+                if (outputChannel) outputChannel.appendLine(`[RAW]: ${trimmed}`);
             }
         });
     });
@@ -216,9 +259,11 @@ function stopDetection() {
         childProcess = null;
     }
 
+    /* Posture cleanup removed 
     if (activeMode && activeMode.includes('posture')) {
         vscode.workspace.getConfiguration('editor').update('fontSize', originalFontSize, vscode.ConfigurationTarget.Global);
     }
+    */
 
     if (cameraProvider) {
         cameraProvider.clear();
@@ -259,48 +304,25 @@ function handleGesture(gesture) {
 function handlePushTrigger(message) {
     if (!message) return;
 
-    const trigger = vscode.workspace.getConfiguration('airGesture').get('pushTrigger', 'physical_push');
-    let triggered = false;
+    // The engine now sends a 'trigger' for us to take over
+    if (message.action === 'git_push_trigger') {
+        outputChannel.appendLine('🚀 Kineticode: Received Push Gesture. Executing Git sequence in terminal...');
 
-    if (trigger === 'physical_push' && message.action === 'git_push') {
-        if (message.success) {
-            vscode.window.showInformationMessage('🚀 Push Successful: Your code is safe on GitHub!');
-        } else {
-            vscode.window.showErrorMessage('❌ Git Push Failed! Check the Debug Console for details.');
+        let terminal = vscode.window.terminals.find(t => t.name === 'Kineticode Git');
+        if (!terminal) {
+            terminal = vscode.window.createTerminal('Kineticode Git');
         }
-        triggered = true;
-    } else if (message.gesture === trigger) {
-        triggered = true;
-    }
 
-    if (triggered && trigger !== 'physical_push') {
-        vscode.window.showInformationMessage('🚀 Gesture Detected: Starting Git Push...', 'Commit & Push').then(selection => {
-            if (selection === 'Commit & Push') {
-                executeGitPush();
-            }
-        });
-    }
-}
+        terminal.show();
+        const timestamp = new Date().toLocaleString();
+        const commitMsg = `Auto-push from Kineticode: ${timestamp}`;
 
-async function executeGitPush() {
-    const terminal = vscode.window.terminals.find(t => t.name === "Git Push") || vscode.window.createTerminal("Git Push");
-    terminal.show();
-    terminal.sendText('git add . && git commit -m "Auto-push from Air Gesture" && git push');
-}
+        // Simple, robust command sequence
+        terminal.sendText(`git add .`);
+        terminal.sendText(`git commit -m "${commitMsg}"`);
+        terminal.sendText(`git push`);
 
-async function handlePosture(stateOrMessage) {
-    const state = (typeof stateOrMessage === 'string') ? stateOrMessage : stateOrMessage.posture;
-    if (!state) return;
-
-    const config = vscode.workspace.getConfiguration();
-    if (state === 'slouch') {
-        // Slouching makes font SMALL (penalty/nudge)
-        config.update('editor.fontSize', Math.max(8, originalFontSize - 4), vscode.ConfigurationTarget.Global);
-        vscode.window.setStatusBarMessage('🚨 POSTURE: Slouching! Shrinking font...', 2000);
-    } else {
-        // Upright restores font to BIG (normal)
-        config.update('editor.fontSize', originalFontSize, vscode.ConfigurationTarget.Global);
-        vscode.window.setStatusBarMessage('✅ POSTURE: Good! Restoring font...', 2000);
+        vscode.window.showInformationMessage('🚀 Kineticode: Starting Git Push in terminal...');
     }
 }
 
@@ -359,6 +381,64 @@ class KineticodeViewProvider {
             </html>
         `;
     }
+}
+
+async function runDiagnostics() {
+    if (outputChannel) {
+        outputChannel.show();
+        outputChannel.appendLine("\n--- KINETICODE DIAGNOSTICS ---");
+    }
+
+    const config = vscode.workspace.getConfiguration('airGesture');
+    const pythonCommand = config.get('pythonPath') || (process.platform === 'win32' ? 'python' : 'python3');
+
+    outputChannel.appendLine(`Diagnostic: Platform = ${process.platform}`);
+    outputChannel.appendLine(`Diagnostic: Configured Python Path = ${pythonCommand}`);
+
+    // Check version
+    const check = spawn(pythonCommand, ['--version']);
+    check.stdout.on('data', (data) => outputChannel.appendLine(`Diagnostic: Python Version Out = ${data.toString().trim()}`));
+    check.stderr.on('data', (data) => outputChannel.appendLine(`Diagnostic: Python Version Err = ${data.toString().trim()}`));
+
+    check.on('error', (err) => {
+        outputChannel.appendLine(`Diagnostic: FAILED to run python command. Error: ${err.message}`);
+        vscode.window.showErrorMessage(`Diagnostics Failed: Python command '${pythonCommand}' could not be executed.`);
+    });
+
+    check.on('close', (code) => {
+        outputChannel.appendLine(`Diagnostic: Version check exited with code ${code}`);
+        if (code === 0) {
+            outputChannel.appendLine("Diagnostic: Testing heart-beat (importing libraries)...");
+            const libCheck = spawn(pythonCommand, ['-c', 'import cv2, mediapipe, pyautogui, numpy; print("LIBRARIES_OK")']);
+            libCheck.stdout.on('data', (data) => {
+                if (data.toString().includes("LIBRARIES_OK")) {
+                    outputChannel.appendLine("Diagnostic: Libraries verified successfully! 🏃‍♂️");
+                    vscode.window.showInformationMessage("Kineticode Diagnostics: Environment looks perfect!");
+                }
+            });
+            libCheck.on('close', (c) => {
+                if (c !== 0) outputChannel.appendLine(`Diagnostic: Library check failed with code ${c}`);
+
+                // Final Check: GIT IDENTITY
+                const gitCheck = spawn('git', ['config', 'user.email']);
+                gitCheck.stdout.on('data', (d) => outputChannel.appendLine(`Diagnostic: Git Identity = ${d.toString().trim()}`));
+                gitCheck.on('close', (gc) => {
+                    if (gc !== 0) {
+                        outputChannel.appendLine("Diagnostic: Git Identity (email) NOT FOUND! Commits will fail.");
+                        vscode.window.showWarningMessage("Git Identity not set! Use 'Fix Git' in Diagnostics.", "Fix Git").then(s => {
+                            if (s === "Fix Git") {
+                                const term = vscode.window.createTerminal("Kineticode Git Fix");
+                                term.show();
+                                term.sendText("git config --global user.email 'you@example.com' && git config --global user.name 'Your Name' && git pull");
+                            }
+                        });
+                    } else {
+                        outputChannel.appendLine("Diagnostic: Git Identity OK! 🚀");
+                    }
+                });
+            });
+        }
+    });
 }
 
 function deactivate() {
