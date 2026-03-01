@@ -200,6 +200,9 @@ def main():
     global DEBUG_WINDOW, hand_landmarker, pose_landmarker, face_landmarker, current_state
     DEBUG_WINDOW = args.debug == 'true'
 
+    if args.extension:
+        print(json.dumps({"status": "ready"}), flush=True)
+
     # Lazy Initialization based on flags
     if args.hands:
         base_hand = python.BaseOptions(model_asset_path=HAND_MODEL)
