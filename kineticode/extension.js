@@ -103,10 +103,8 @@ function startDetection(context, modes) {
 
     activeMode = modes.join(' + ');
 
-    // Determine which script to run.
-    let scriptName = 'unified_engine.py';
-    if (modes.includes('copy_paste')) scriptName = 'copy_paste_engine.py';
-    else if (modes.includes('push')) scriptName = 'push_engine.py';
+    // Determine which script to run. ALWAYS use unified engine now.
+    const scriptName = 'unified_engine.py';
 
     const scriptPath = path.join(context.extensionPath, scriptName);
     const pythonCommand = process.platform === 'win32' ? 'python' : 'python3';
@@ -126,8 +124,10 @@ function startDetection(context, modes) {
 
     // Enable relevant engines based on selected modes
     if (modes.includes('macro') || modes.includes('hand') || modes.includes('copy_paste')) args.push('--hands');
-    if (modes.includes('posture')) args.push('--posture');
+    if (modes.includes('posture') || modes.includes('push')) args.push('--posture');
     if (modes.includes('tilt') || modes.includes('face')) args.push('--face');
+    if (modes.includes('copy_paste')) args.push('--copy_paste');
+    if (modes.includes('push')) args.push('--push');
 
     childProcess = spawn(pythonCommand, args, {
         cwd: context.extensionPath
@@ -180,10 +180,8 @@ function startDetection(context, modes) {
                     handlePushTrigger(msg);
                 } else if (msg.action === 'copy') {
                     vscode.commands.executeCommand('editor.action.clipboardCopyAction');
-                    vscode.window.showInformationMessage('Kineticode: Text Copied!', 'OK');
                 } else if (msg.action === 'paste') {
                     vscode.commands.executeCommand('editor.action.clipboardPasteAction');
-                    vscode.window.showInformationMessage('Kineticode: Text Pasted!', 'OK');
                 } else if (msg.posture) {
                     handlePosture(msg.posture);
                 } else if (msg.frame && cameraProvider) {

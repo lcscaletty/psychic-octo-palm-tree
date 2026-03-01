@@ -7,8 +7,57 @@ import json
 import sys
 import os
 import argparse
+import subprocess
 import pyautogui
 import base64
+import threading
+
+def perform_git_push(workspace_path, script_dir):
+    """
+    Executes the git sequence to push current changes to GitHub.
+    """
+    print("\n--- ATTEMPTING GIT PUSH ---", flush=True)
+    try:
+        # Use provided workspace path, or default to script dir
+        target_dir = workspace_path if workspace_path else script_dir
+        print(f"Target Directory: {target_dir}", flush=True)
+
+        # 1. Find git root
+        root_res = subprocess.run(["git", "rev-parse", "--show-toplevel"], 
+                               cwd=target_dir, capture_output=True, text=True, check=True)
+        git_root = root_res.stdout.strip()
+        print(f"Detected Git Root: {git_root}", flush=True)
+        
+        # 2. Add changes
+        print("Running: git add .", flush=True)
+        subprocess.run(["git", "add", "."], cwd=git_root, check=True)
+        
+        # 3. Check status (is there anything to commit?)
+        status_res = subprocess.run(["git", "status", "--porcelain"], 
+                                 cwd=git_root, capture_output=True, text=True, check=True)
+        if not status_res.stdout.strip():
+            print("--- NOTHING TO COMMIT: Skipping push ---", flush=True)
+            return True # Success (nothing needed)
+
+        # 4. Commit
+        commit_msg = f"Auto-push from Kineticode Push Engine: {time.strftime('%Y-%m-%d %H:%M:%S')}"
+        print(f"Running: git commit -m \"{commit_msg}\"", flush=True)
+        subprocess.run(["git", "commit", "-m", commit_msg], cwd=git_root, check=True)
+        
+        # 5. Push
+        print("Running: git push", flush=True)
+        subprocess.run(["git", "push"], cwd=git_root, check=True)
+        
+        print("--- GIT PUSH SUCCESSFUL ---", flush=True)
+        return True
+    except subprocess.CalledProcessError as e:
+        print(f"--- GIT ERROR (code {e.returncode}) ---", flush=True)
+        if e.stdout: print(f"STDOUT: {e.stdout}", flush=True)
+        if e.stderr: print(f"STDERR: {e.stderr}", flush=True)
+        return False
+    except Exception as e:
+        print(f"--- UNEXPECTED ERROR: {e} ---", flush=True)
+        return False
 
 # --- Configuration ---
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -63,17 +112,13 @@ def get_finger_states(landmarks):
     
     states = []
     
-    # Thumb: Check if Tip is further from wrist than the base (approximate)
-    # Using x coordinate for thumb (assuming palm horizontal-ish) or distance
-    # Simpler: check if thumb tip is to the left/right of the palm? 
-    # Let's use distance from wrist for thumb
+    # Thumb: Check if Tip is pointing "up" (lower y value) relative to the IP joint
+    # For a fist the thumb is tucked down/in. For a thumbs up it points up.
+    # For simple rock on/peace, thumb is usually tucked under the other fingers.
     thumb_tip = landmarks[4]
-    thumb_base = landmarks[2]
-    wrist = landmarks[0]
+    thumb_ip = landmarks[3] # Interphalangeal joint
     
-    # Simple x-axis check for thumb (assuming palm facing camera)
-    # If Tip x is outside Joint2.x relative to wrist, it's out/up
-    if abs(thumb_tip.x - wrist.x) > abs(thumb_base.x - wrist.x):
+    if thumb_tip.y < thumb_ip.y:
         states.append(True)
     else:
         states.append(False)
@@ -84,6 +129,69 @@ def get_finger_states(landmarks):
         
     return states
 
+# --- Copy/Paste Helpers ---
+STATE_IDLE = "IDLE"
+STATE_AWAITING_COPY = "AWAITING_COPY"
+STATE_AWAITING_PASTE = "AWAITING_PASTE"
+current_state = STATE_IDLE
+shutdown_flag = False
+
+def read_stdin():
+    global current_state, shutdown_flag
+    while True:
+        try:
+            line = sys.stdin.readline()
+            if not line:
+                shutdown_flag = True
+                break
+            msg = json.loads(line.strip())
+            if msg.get("event") == "selection_changed":
+                has_selection = msg.get("hasSelection", False)
+                if has_selection:
+                    current_state = STATE_AWAITING_COPY
+                elif not has_selection and current_state == STATE_AWAITING_COPY:
+                    current_state = STATE_IDLE
+        except Exception:
+            pass
+
+def get_distance(p1, p2):
+    return ((p1.x - p2.x)**2 + (p1.y - p2.y)**2 + (p1.z - p2.z)**2)**0.5
+
+def get_hand_size(hl):
+    return get_distance(hl[0], hl[9])
+
+def is_fist(hl):
+    wrist = hl[0]
+    fingers = [(5, 8), (9, 12), (13, 16), (17, 20)]
+    sz = get_hand_size(hl)
+    if sz == 0: return False
+    
+    # print(f"--- FIST CHECK --- sz: {sz:.4f}")
+    for i, (mcp_idx, tip_idx) in enumerate(fingers):
+        dist_mcp = get_distance(wrist, hl[mcp_idx])
+        dist_tip = get_distance(wrist, hl[tip_idx])
+        # print(f"F{i} tip: {dist_tip:.4f}, mcp*1.1: {dist_mcp*1.1:.4f}, sz*1.8: {sz*1.8:.4f}")
+        if dist_tip > dist_mcp * 1.1 or dist_tip > sz * 1.8: 
+            return False
+    return True
+
+def is_open(hl):
+    wrist = hl[0]
+    fingers = [(5, 8), (9, 12), (13, 16), (17, 20)]
+    sz = get_hand_size(hl)
+    if sz == 0: return False
+    
+    open_count = 0
+    # print(f"--- OPEN CHECK --- sz: {sz:.4f}")
+    for i, (mcp_idx, tip_idx) in enumerate(fingers):
+        dist_mcp = get_distance(wrist, hl[mcp_idx])
+        dist_tip = get_distance(wrist, hl[tip_idx])
+        # print(f"F{i} tip: {dist_tip:.4f}, mcp*1.15: {dist_mcp*1.15:.4f}, sz*1.4: {sz*1.4:.4f}")
+        if dist_tip > dist_mcp * 1.15 and dist_tip > sz * 1.4: 
+            open_count += 1
+    return open_count >= 3
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--extension', action='store_true')
@@ -91,12 +199,14 @@ def main():
     parser.add_argument('--hands', action='store_true', help='Enable Hand Tracking')
     parser.add_argument('--posture', action='store_true', help='Enable Posture Tracking')
     parser.add_argument('--face', action='store_true', help='Enable Face/Wink Tracking')
+    parser.add_argument('--copy_paste', action='store_true', help='Enable Copy/Paste Tracking')
+    parser.add_argument('--push', action='store_true', help='Enable Push-to-GitHub Tracking')
     parser.add_argument('--stream', action='store_true', help='Stream base64 frames to stdout')
     parser.add_argument('--workspace', type=str, default='', help='Target workspace path')
     parser.add_argument('--snap_threshold', type=float, default=0.05, help='Snap detection threshold')
     args = parser.parse_args()
 
-    global DEBUG_WINDOW, hand_landmarker, pose_landmarker, face_landmarker
+    global DEBUG_WINDOW, hand_landmarker, pose_landmarker, face_landmarker, current_state
     DEBUG_WINDOW = args.debug == 'true'
 
     # Lazy Initialization based on flags
@@ -163,10 +273,33 @@ def main():
     STREAM_FPS = 15
 
     if args.extension:
+        threading.Thread(target=read_stdin, daemon=True).start()
         print(json.dumps({"status": "ready"}), flush=True)
 
+    # Copy/Paste specific state
+    fist_frames = 0
+    open_frames = 0
+    REQUIRED_FRAMES = 3
+    was_fist_previously = False
+    action_cooldown = 1.5
+    last_cp_action_time = 0
+
+    # Push specific state
+    PUSH_STATE_MONITORING = "MONITORING"
+    PUSH_STATE_AWAITING_CONFIRMATION = "AWAITING_CONFIRMATION"
+    push_state = PUSH_STATE_MONITORING
+    
+    neutral_dist = None
+    last_push_time = 0
+    push_start_time = time.time()
+    confirmation_start_time = 0
+    CONFIRM_TIMEOUT = 10.0 # 10 seconds to confirm
+    PUSH_THRESHOLD = 0.85  # Current head size < 85% of neutral = Push detected
+    PUSH_COOLDOWN = 5.0
+    WARMUP_TIME = 2.0
+
     consecutive_failures = 0
-    while cap.isOpened():
+    while cap.isOpened() and not shutdown_flag:
         success, image = cap.read()
         if not success:
             consecutive_failures += 1
@@ -212,7 +345,7 @@ def main():
                 # Removed horizontal swipe_left/right here to use head tilt instead
                 
                 # --- Macro Gesture Detection ---
-                if current_time - last_macro_time > MACRO_COOLDOWN:
+                if current_state != STATE_AWAITING_COPY and current_time - last_macro_time > MACRO_COOLDOWN:
                     fingers = get_finger_states(hl)
                     # states: [thumb, index, middle, ring, pinky]
                     
@@ -230,6 +363,51 @@ def main():
                         hand_status = f"MACRO: {macro}"
                         hand_box_color = (255, 255, 0) # Gold
 
+                # --- Copy/Paste Detection ---
+                if args.copy_paste:
+                    if current_state == STATE_AWAITING_COPY:
+                        hand_status = "FIST = COPY"
+                        hand_box_color = (0, 165, 255)
+                    elif current_state == STATE_AWAITING_PASTE:
+                        hand_status = "OPEN = PASTE"
+                        hand_box_color = (255, 0, 255)
+
+                    current_is_fist = is_fist(hl)
+                    current_is_open = is_open(hl)
+                    
+                    if current_is_fist:
+                        fist_frames += 1
+                        open_frames = max(0, open_frames - 1)
+                    elif current_is_open:
+                        open_frames += 1
+                        fist_frames = max(0, fist_frames - 1)
+                    else:
+                        fist_frames = max(0, fist_frames - 1)
+                        open_frames = max(0, open_frames - 1)
+                        
+                    is_stable_fist = fist_frames >= REQUIRED_FRAMES
+                    is_stable_open = open_frames >= REQUIRED_FRAMES
+                    
+                    if current_time - last_cp_action_time > action_cooldown:
+                        if current_state == STATE_AWAITING_COPY:
+                            if is_stable_fist:
+                                print(json.dumps({"action": "copy"}), flush=True)
+                                current_state = STATE_AWAITING_PASTE
+                                last_cp_action_time = current_time
+                                hand_status = "COPIED!"
+                                hand_box_color = (0, 255, 0)
+                                was_fist_previously = False
+                        
+                        elif current_state == STATE_AWAITING_PASTE:
+                            if is_stable_fist: was_fist_previously = True
+                            if was_fist_previously and is_stable_open:
+                                print(json.dumps({"action": "paste"}), flush=True)
+                                current_state = STATE_IDLE
+                                last_cp_action_time = current_time
+                                hand_status = "PASTED!"
+                                hand_box_color = (0, 255, 0)
+                                was_fist_previously = False
+
                 if current_gesture:
                     trigger_action(current_gesture, use_extension=args.extension)
             else:
@@ -237,35 +415,75 @@ def main():
                 smoothed_x = smoothed_y = neutral_y = None
                 can_trigger = True
 
-        # 2. PROCESS POSE
-        if args.posture and pose_landmarker:
+        # 2. PROCESS POSE AND PUSH
+        if (args.posture or args.push) and pose_landmarker and current_state != STATE_AWAITING_COPY:
             pose_results = pose_landmarker.detect(mp_image)
             if pose_results.pose_landmarks:
-                for pl in pose_results.pose_landmarks:
-                    ey = (pl[2].y + pl[5].y) / 2
-                    sy = (pl[11].y + pl[12].y) / 2
-                    nd = abs(sy - ey)
+                try:
+                    for pl in pose_results.pose_landmarks:
+                        if len(pl) < 17:
+                            continue # Skip if we don't have enough landmarks for shoulders/wrists
+                        # Common landmarks
+                        ey = (pl[2].y + pl[5].y) / 2
+                        sy = (pl[11].y + pl[12].y) / 2
+                        nd = abs(sy - ey)
+                        
+                        eye_dist = ((pl[2].x - pl[5].x)**2 + (pl[2].y - pl[5].y)**2)**0.5
+                        nose_y = pl[0].y
+                        lw_y = pl[15].y
+                        rw_y = pl[16].y
 
-                    if neutral_neck_dist is None:
-                        neutral_neck_dist = nd
-                        neutral_shoulder_y = sy
-                    
-                    nr = nd / neutral_neck_dist if neutral_neck_dist else 1.0
-                    sd = sy - neutral_shoulder_y if neutral_shoulder_y else 0
-                    is_slouching = (nr < 0.85) or (sd > 0.05)
-                    
-                    state = "slouch" if is_slouching else "upright"
-                    pose_color = (0, 0, 255) if is_slouching else (0, 255, 0)
-                    posture_status = "🚨 SLOUCHING" if is_slouching else "✅ GOOD POSTURE"
+                        if args.posture:
+                            if neutral_neck_dist is None:
+                                neutral_neck_dist = nd
+                                neutral_shoulder_y = sy
+                            
+                            nr = nd / neutral_neck_dist if neutral_neck_dist else 1.0
+                            sd = sy - neutral_shoulder_y if neutral_shoulder_y else 0
+                            is_slouching = (nr < 0.85) or (sd > 0.05)
+                            
+                            state = "slouch" if is_slouching else "upright"
+                            pose_color = (0, 0, 255) if is_slouching else (0, 255, 0)
+                            posture_status = "🚨 SLOUCHING" if is_slouching else "✅ GOOD POSTURE"
 
-                    if state != current_posture:
-                        current_posture = state
-                        if args.extension:
-                            print(json.dumps({"posture": current_posture}), flush=True)
+                            if state != current_posture:
+                                current_posture = state
+                                if args.extension:
+                                    print(json.dumps({"posture": current_posture}), flush=True)
+
+                        if args.push:
+                            # Warmup phase
+                            if time.time() - push_start_time < WARMUP_TIME:
+                                if neutral_dist is None: neutral_dist = eye_dist
+                                else: neutral_dist = 0.1 * eye_dist + 0.9 * neutral_dist
+                            else:
+                                ratio = eye_dist / neutral_dist if neutral_dist else 1.0
+                                if push_state == PUSH_STATE_MONITORING:
+                                    if ratio < PUSH_THRESHOLD and (time.time() - last_push_time > PUSH_COOLDOWN):
+                                        push_state = PUSH_STATE_AWAITING_CONFIRMATION
+                                        confirmation_start_time = time.time()
+                                        if args.extension:
+                                            print(json.dumps({"status": "awaiting_confirmation"}), flush=True)
+                                
+                                elif push_state == PUSH_STATE_AWAITING_CONFIRMATION:
+                                    # For Y axis, smaller is higher up. Hands higher than nose = <
+                                    hands_up = lw_y < nose_y and rw_y < nose_y
+                                    elapsed = time.time() - confirmation_start_time
+                                    
+                                    if hands_up:
+                                        success = perform_git_push(args.workspace, SCRIPT_DIR)
+                                        last_push_time = time.time()
+                                        push_state = PUSH_STATE_MONITORING
+                                        if args.extension:
+                                            print(json.dumps({"action": "git_push", "success": success, "ratio": ratio}), flush=True)
+                                    elif elapsed > CONFIRM_TIMEOUT:
+                                        push_state = PUSH_STATE_MONITORING
+                except Exception as e:
+                    print(json.dumps({"error": f"Pose Engine Crash: {str(e)}"}), flush=True)
 
         # 3. PROCESS FACE (Wink)
         face_status = "Analyzing Face..."
-        if args.face and face_landmarker:
+        if args.face and face_landmarker and current_state != STATE_AWAITING_COPY:
             face_results = face_landmarker.detect(mp_image)
             if face_results.face_blendshapes:
                 shapes = {c.category_name: c.score for c in face_results.face_blendshapes[0]}
