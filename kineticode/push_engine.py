@@ -150,8 +150,10 @@ def main():
 
     while cap.isOpened():
         success, image = cap.read()
-        if not success:
+        if not success or image is None:
             print("Failed to read frame", flush=True)
+            if DEBUG_WINDOW:
+                if cv2.waitKey(1) & 0xFF == ord('q') or cv2.waitKey(1) & 0xFF == 27: break
             continue
 
         image = cv2.flip(image, 1)

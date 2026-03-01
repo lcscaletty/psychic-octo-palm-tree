@@ -20,6 +20,7 @@ STATE_IDLE = "IDLE"
 STATE_AWAITING_COPY = "AWAITING_COPY"
 STATE_AWAITING_PASTE = "AWAITING_PASTE"
 current_state = STATE_IDLE
+shutdown_flag = False
 
 # --- MediaPipe Task Initialization ---
 if not os.path.exists(MODEL_PATH):
@@ -38,11 +39,13 @@ landmarker = vision.HandLandmarker.create_from_options(options)
 
 # --- Stdin Reader Thread ---
 def read_stdin():
-    global current_state
+    global current_state, shutdown_flag
     while True:
         try:
             line = sys.stdin.readline()
             if not line:
+                # Extension closed the stream (killed process)
+                shutdown_flag = True
                 break
             msg = json.loads(line.strip())
             if msg.get("event") == "selection_changed":
@@ -59,55 +62,69 @@ def read_stdin():
         except Exception:
             pass
 
+def get_distance(p1, p2):
+    return ((p1.x - p2.x)**2 + (p1.y - p2.y)**2 + (p1.z - p2.z)**2)**0.5
+
 def get_hand_size(hand_landmarks):
-    """Calculates a rough size of the hand to use as a dynamic threshold."""
-    # Distance from wrist (0) to middle finger mcp (9)
-    p0 = hand_landmarks[0]
-    p9 = hand_landmarks[9]
-    return ((p9.x - p0.x)**2 + (p9.y - p0.y)**2 + (p9.z - p0.z)**2)**0.5
+    """Calculate baseline palm size from wrist to middle finger MCP."""
+    return get_distance(hand_landmarks[0], hand_landmarks[9])
 
 def is_fist(hand_landmarks):
     """
-    Determines if the hand is a fist by checking if fingertips 
-    are close to the palm base (landmark 0), scaled by hand size.
+    Determines if the hand is a strict fist:
+    1. Fingertips must be closer to the wrist than their respective MCP joints.
+    2. Fingertips must be physically close to the wrist (tightly curled).
     """
-    palm_base = hand_landmarks[0]
-    fingertips = [8, 12, 16, 20] # Index, Middle, Ring, Pinky
+    wrist = hand_landmarks[0]
+    fingers = [(5, 8), (9, 12), (13, 16), (17, 20)] # (MCP, TIP)
     hand_size = get_hand_size(hand_landmarks)
     
     if hand_size == 0: return False
     
-    # Fingers must be tucked in (distance to palm < 1.2x palm length)
-    threshold = hand_size * 1.2 
-    
-    for tip_idx in fingertips:
+    for mcp_idx, tip_idx in fingers:
+        mcp = hand_landmarks[mcp_idx]
         tip = hand_landmarks[tip_idx]
-        dist = ((tip.x - palm_base.x)**2 + (tip.y - palm_base.y)**2 + (tip.z - palm_base.z)**2)**0.5
-        if dist > threshold:
-            return False # A finger is extended
+        
+        dist_mcp = get_distance(wrist, mcp)
+        dist_tip = get_distance(wrist, tip)
+        
+        # 1. Tip must be tucked closely relative to the MCP
+        if dist_tip > dist_mcp * 1.1:
+            return False
+            
+        # 2. Tip must be close to the wrist (tight curl)
+        if dist_tip > hand_size * 1.8:
+            return False
+            
     return True
 
 def is_open(hand_landmarks):
     """
-    Determines if the hand is generally open (fingers extended), scaled by hand size.
+    Determines if the hand is strictly open:
+    1. Fingertips must be much further from the wrist than the MCP joints.
+    2. Fingertips must be physically far from the wrist (fully extended).
     """
-    palm_base = hand_landmarks[0]
-    fingertips = [8, 12, 16, 20]
+    wrist = hand_landmarks[0]
+    fingers = [(5, 8), (9, 12), (13, 16), (17, 20)]
     hand_size = get_hand_size(hand_landmarks)
     
     if hand_size == 0: return False
     
-    # Fingers must be extended (distance to palm > 1.8x palm length)
-    threshold = hand_size * 1.8 
-    
     open_fingers = 0
-    for tip_idx in fingertips:
+    for mcp_idx, tip_idx in fingers:
+        mcp = hand_landmarks[mcp_idx]
         tip = hand_landmarks[tip_idx]
-        dist = ((tip.x - palm_base.x)**2 + (tip.y - palm_base.y)**2 + (tip.z - palm_base.z)**2)**0.5
-        if dist > threshold:
-            open_fingers += 1
+        
+        dist_mcp = get_distance(wrist, mcp)
+        dist_tip = get_distance(wrist, tip)
+        
+        # 1. Tip must be extended past the MCP
+        if dist_tip > dist_mcp * 1.15:
+            # 2. Tip must be far from the wrist
+            if dist_tip > hand_size * 1.4:
+                open_fingers += 1
             
-    # If at least 3 fingers are fully extended, it's open
+    # Require at least 3 fingers to be fully open
     return open_fingers >= 3
 
 def main():
@@ -118,7 +135,7 @@ def main():
     parser.add_argument('--debug', type=str, choices=['true', 'false'], default='true', help='Show debug window')
     parser.add_argument('--workspace', type=str, default='', help='Ignored')
     parser.add_argument('--stream', action='store_true', help='Stream base64 frames to stdout')
-    args = parser.parse_args()
+    args, _ = parser.parse_known_args()
 
     DEBUG_WINDOW = args.debug == 'true'
 
@@ -127,10 +144,29 @@ def main():
         threading.Thread(target=read_stdin, daemon=True).start()
         print(json.dumps({"status": "ready"}), flush=True)
 
-    cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
-    if not cap.isOpened():
-        cap = cv2.VideoCapture(0)
-    if not cap.isOpened():
+    cap = None
+    for cam_idx in range(5):
+        test_cap = cv2.VideoCapture(cam_idx, cv2.CAP_DSHOW)
+        if test_cap.isOpened():
+            # Let sensor warm up and drop black frames typical of virtual/dummy cameras
+            valid = False
+            for _ in range(10):
+                success, img = test_cap.read()
+                if success and img is not None and img.max() > 10:
+                    valid = True
+                    break
+                time.sleep(0.1)
+            if valid:
+                cap = test_cap
+                break
+            test_cap.release()
+            
+    if cap is None:
+        test_cap = cv2.VideoCapture(0)
+        if test_cap.isOpened():
+            cap = test_cap
+
+    if cap is None or not cap.isOpened():
         if args.extension: print(json.dumps({"error": "webcam_fail"}), flush=True)
         return
 
@@ -142,31 +178,49 @@ def main():
     # Debouncing variables
     fist_frames = 0
     open_frames = 0
-    REQUIRED_FRAMES = 5 # Require gesture to be held for 5 frames
+    REQUIRED_FRAMES = 3 # Reduced hold time for snappier gestures
     
     # We look for a *transition* from fist to open for the paste release
     was_fist_previously = False
 
-    while cap.isOpened():
+    while cap.isOpened() and not shutdown_flag:
         success, image = cap.read()
-        if not success: continue
+        if not success or image is None:
+            if DEBUG_WINDOW:
+                if cv2.waitKey(1) & 0xFF == 27: break
+            continue
 
         image = cv2.flip(image, 1)
         h, w, _ = image.shape
+        
+        # Check if the camera is returning pure black frames (privacy shutter closed)
+        is_blank = image.max() < 15
+        if is_blank:
+            # Create a blank gray canvas so text is highly visible
+            image[:, :] = (50, 50, 50)
+            cv2.putText(image, "CAMERA IS BLACK / COVERED", (10, h // 2 - 20), cv2.FONT_HERSHEY_DUPLEX, 0.6, (0, 0, 255), 2)
+            cv2.putText(image, "Check privacy shutter or permissions", (10, h // 2 + 20), cv2.FONT_HERSHEY_DUPLEX, 0.4, (0, 0, 255), 1)
+
         image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
         mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=image_rgb)
         
-        results = landmarker.detect(mp_image)
+        if not is_blank:
+            results = landmarker.detect(mp_image)
+        else:
+            class DummyResults:
+                hand_landmarks = []
+            results = DummyResults()
+            
         display_image = image.copy()
         
-        status_text = "Select text in VS Code..."
+        status_text = "Highlight text to start"
         box_color = (150, 150, 150) # Gray
         
         if current_state == STATE_AWAITING_COPY:
-            status_text = "MAKE A FIST TO COPY"
+            status_text = "FIST = COPY"
             box_color = (0, 165, 255) # Orange
         elif current_state == STATE_AWAITING_PASTE:
-            status_text = "MOVE CURSOR, THEN OPEN HAND TO PASTE"
+            status_text = "OPEN = PASTE"
             box_color = (255, 0, 255) # Purple
 
         if results.hand_landmarks:
@@ -196,13 +250,13 @@ def main():
             
             if current_is_fist:
                 fist_frames += 1
-                open_frames = 0
+                open_frames = max(0, open_frames - 1)
             elif current_is_open:
                 open_frames += 1
-                fist_frames = 0
+                fist_frames = max(0, fist_frames - 1)
             else:
-                fist_frames = 0
-                open_frames = 0
+                fist_frames = max(0, fist_frames - 1)
+                open_frames = max(0, open_frames - 1)
                 
             is_stable_fist = fist_frames >= REQUIRED_FRAMES
             is_stable_open = open_frames >= REQUIRED_FRAMES
@@ -216,7 +270,7 @@ def main():
                         last_action_time = time.time()
                         status_text = "COPIED!"
                         box_color = (0, 255, 0)
-                        was_fist_previously = True # initialize state for next step
+                        was_fist_previously = False # Ensure user holds fist or makes a new one
                 
                 elif current_state == STATE_AWAITING_PASTE:
                     # Maintain fist state memory
