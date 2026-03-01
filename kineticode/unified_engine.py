@@ -345,8 +345,6 @@ def main():
             image[:, :] = (50, 50, 50)
             cv2.putText(image, "CAMERA FEED BLACK", (50, 200), cv2.FONT_HERSHEY_DUPLEX, 1.0, (0, 0, 255), 2)
             cv2.putText(image, "Check privacy shutter or other apps", (50, 240), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 1)
-            if args.extension:
-                print(json.dumps({"error": "Camera feed is black. Check privacy shutter or OBS Virtual Camera."}), flush=True)
 
         image = cv2.flip(image, 1)
         h, w, _ = image.shape
