@@ -191,7 +191,6 @@ def main():
     parser.add_argument('--face', action='store_true', help='Enable Face/Wink Tracking')
     parser.add_argument('--copy_paste', action='store_true', help='Enable Copy/Paste Tracking')
     parser.add_argument('--push', action='store_true', help='Enable Push-to-GitHub Tracking')
-    parser.add_argument('--undo', action='store_true', help='Enable Undo (Head Tap) Tracking')
     parser.add_argument('--stream', action='store_true', help='Stream base64 frames to stdout')
     parser.add_argument('--workspace', type=str, default='', help='Target workspace path')
     parser.add_argument('--snap_threshold', type=float, default=0.05, help='Snap detection threshold')
@@ -201,7 +200,7 @@ def main():
     DEBUG_WINDOW = args.debug == 'true'
 
     # Force dependencies
-    if args.undo or args.copy_paste:
+    if args.copy_paste:
         args.hands = True
     if args.push:
         args.posture = True
