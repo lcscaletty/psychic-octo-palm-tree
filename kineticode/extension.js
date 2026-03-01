@@ -102,7 +102,26 @@ function startDetection(context, modes) {
         });
     });
 
-    childProcess.on('close', () => stopDetection());
+    // --- Selection State Tracker for Copy/Paste Engine ---
+    const selectionListener = vscode.window.onDidChangeTextEditorSelection(e => {
+        if (!childProcess || !activeMode.includes('copy_paste')) return;
+        let hasSelection = false;
+        for (const selection of e.selections) {
+            if (!selection.isEmpty) {
+                hasSelection = true;
+                break;
+            }
+        }
+        try {
+            childProcess.stdin.write(JSON.stringify({ event: 'selection_changed', hasSelection }) + '\n');
+        } catch (err) { }
+    });
+    context.subscriptions.push(selectionListener);
+
+    childProcess.on('close', () => {
+        selectionListener.dispose();
+        stopDetection();
+    });
     updateStatusBar();
 }
 
@@ -118,11 +137,14 @@ function stopDetection() {
 
 function updateStatusBar() {
     if (activeMode) {
-        mainStatusBarItem.text = `$(circle-filled) KINETICODE: ON`;
+        const modes = activeMode.split(' + ').map(m => m.toUpperCase()).join(' + ');
+        mainStatusBarItem.text = `$(circle-filled) KINETICODE: [${modes}]`;
         mainStatusBarItem.command = 'air-gesture.stop';
+        mainStatusBarItem.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
     } else {
-        mainStatusBarItem.text = `$(broadcast) KINETICODE: OFF`;
+        mainStatusBarItem.text = `$(broadcast) KINETICODE: SELECT MODE`;
         mainStatusBarItem.command = 'air-gesture.selectMode';
+        mainStatusBarItem.backgroundColor = undefined;
     }
 }
 

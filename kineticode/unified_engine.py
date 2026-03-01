@@ -78,21 +78,20 @@ def trigger_action(gesture, use_extension=False):
 
 def get_finger_states(landmarks):
     """Returns a list of 5 booleans [thumb, index, middle, ring, pinky] indicating if finger is UP."""
-    finger_tips = [8, 12, 16, 20]
-    finger_joints = [6, 10, 14, 18] # PIP joints
+    sz = get_hand_size(landmarks)
+    if sz == 0: return [False] * 5
     
-    states = []
-    thumb_tip = landmarks[4]
-    thumb_ip = landmarks[3] # Interphalangeal joint
+    # Thumb: Distance from wrist (0) to tip (4) vs knuckle (2)
+    thumb_up = get_distance(landmarks[0], landmarks[4]) > get_distance(landmarks[0], landmarks[2]) * 1.3
     
-    if thumb_tip.y < thumb_ip.y:
-        states.append(True)
-    else:
-        states.append(False)
-        
-    for tip, joint in zip(finger_tips, finger_joints):
-        states.append(landmarks[tip].y < landmarks[joint].y)
-        
+    tips = [8, 12, 16, 20]
+    mcps = [5, 9, 13, 17]
+    
+    states = [thumb_up]
+    for tip, mcp in zip(tips, mcps):
+        # Ultra-lenient: Index/Pinky only need to be 50% of hand size away.
+        # This catches short pinkies and relaxed hands.
+        states.append(get_distance(landmarks[mcp], landmarks[tip]) > sz * 0.5)
     return states
 
 # --- State Helpers ---
@@ -115,26 +114,28 @@ def read_stdin():
                 has_selection = msg.get("hasSelection", False)
                 if has_selection:
                     current_state = STATE_AWAITING_COPY
-                elif not has_selection and current_state == STATE_AWAITING_COPY:
-                    current_state = STATE_IDLE
+                else:
+                    # If we were waiting for a copy but user clicked off, go back to IDLE
+                    if current_state == STATE_AWAITING_COPY:
+                        current_state = STATE_IDLE
         except Exception:
             pass
 
 def get_distance(p1, p2):
-    return ((p1.x - p2.x)**2 + (p1.y - p2.y)**2 + (p1.z - p2.z)**2)**0.5
+    # Use 2D distance for robust screen-space gesture recognition
+    return ((p1.x - p2.x)**2 + (p1.y - p2.y)**2)**0.5
 
 def get_hand_size(hl):
     return get_distance(hl[0], hl[9])
 
 def is_fist(hl):
-    wrist = hl[0]
-    fingers = [(5, 8), (9, 12), (13, 16), (17, 20)]
     sz = get_hand_size(hl)
     if sz == 0: return False
-    for i, (mcp_idx, tip_idx) in enumerate(fingers):
-        dist_mcp = get_distance(wrist, hl[mcp_idx])
-        dist_tip = get_distance(wrist, hl[tip_idx])
-        if dist_tip > dist_mcp * 1.1 or dist_tip > sz * 1.8: 
+    fingers = [(5, 8), (9, 12), (13, 16), (17, 20)]
+    # Relaxed fist: TIPs must be relatively close to MCPs
+    for mcp_idx, tip_idx in fingers:
+        dist_tip_mcp = get_distance(hl[mcp_idx], hl[tip_idx])
+        if dist_tip_mcp > sz * 0.9: # More relaxed (was 0.6)
             return False
     return True
 
@@ -144,12 +145,12 @@ def is_open(hl):
     sz = get_hand_size(hl)
     if sz == 0: return False
     open_count = 0
-    for i, (mcp_idx, tip_idx) in enumerate(fingers):
-        dist_mcp = get_distance(wrist, hl[mcp_idx])
-        dist_tip = get_distance(wrist, hl[tip_idx])
-        if dist_tip > dist_mcp * 1.15 and dist_tip > sz * 1.4: 
+    for mcp_idx, tip_idx in fingers:
+        dist_tip_mcp = get_distance(hl[mcp_idx], hl[tip_idx])
+        # Very sensitive: Tip just has to be 50% of hand size away from MCP
+        if dist_tip_mcp > sz * 0.5: 
             open_count += 1
-    return open_count >= 3
+    return open_count >= 2 # Only need 2 fingers for "Open"
 
 def main():
     parser = argparse.ArgumentParser()
@@ -238,6 +239,7 @@ def main():
     REQUIRED_FRAMES = 3
     was_fist_previously = False
     action_cooldown = 1.5
+    cp_cooldown = 0.5
     last_cp_action_time = 0
 
     PUSH_STATE_MONITORING = "MONITORING"
@@ -259,6 +261,8 @@ def main():
     last_undo_time = 0
     undo_touch_start = 0
 
+    paste_primed = False
+    last_hand_seen_time = time.time()
     consecutive_failures = 0
     while cap.isOpened() and not shutdown_flag:
         success, image = cap.read()
@@ -296,43 +300,66 @@ def main():
             except: pass
             
             if hand_results and hand_results.hand_landmarks:
+                last_hand_seen_time = current_time
                 hl = hand_results.hand_landmarks[0]
                 fingers = get_finger_states(hl)
                 
-                # Macros
-                if current_state != STATE_AWAITING_COPY and current_time - last_macro_time > MACRO_COOLDOWN:
+                # 1.1 MACRO GESTURES (Paused if selecting or primed)
+                if current_state != STATE_AWAITING_COPY and not paste_primed and current_time - last_macro_time > MACRO_COOLDOWN:
                     macro = None
+                    m_labels = {
+                        "gesture_one": "POINT (1)",
+                        "gesture_peace": "PEACE (2)",
+                        "gesture_l": "FIND (L)"
+                    }
                     if fingers == [False, True, False, False, False]: macro = "gesture_one"
-                    elif fingers[1:] == [True, True, False, False]: macro = "gesture_peace"
-                    elif fingers[1:] == [True, False, False, True]: macro = "gesture_rock"
+                    # Peace: Index + Middle UP, others DOWN. Thumb ignored.
+                    elif fingers[1] and fingers[2] and not fingers[3] and not fingers[4]: macro = "gesture_peace"
                     elif fingers == [True, True, False, False, False]: macro = "gesture_l"
+                  
                     if macro:
                         last_macro_time = current_time
                         trigger_action(macro, use_extension=args.extension)
-                        hand_status = f"MACRO: {macro}"
+                        hand_status = m_labels.get(macro, macro)
+                    else:
+                        hand_status = "Tracking..."
 
-                # Copy/Paste
+                # 1.2 COPY/PASTE LOGIC
                 if args.copy_paste:
                     current_is_fist = is_fist(hl)
                     current_is_open = is_open(hl)
-                    if current_is_fist: fist_frames += 1
-                    elif current_is_open: open_frames += 1
                     
-                    if current_time - last_cp_action_time > action_cooldown:
-                        if current_state == STATE_AWAITING_COPY and fist_frames >= REQUIRED_FRAMES:
-                            print(json.dumps({"action": "copy"}), flush=True)
-                            current_state = STATE_AWAITING_PASTE
-                            last_cp_action_time = current_time
-                        elif current_state == STATE_AWAITING_PASTE:
-                            if is_fist(hl): was_fist_previously = True
-                            if was_fist_previously and open_frames >= REQUIRED_FRAMES:
-                                print(json.dumps({"action": "paste"}), flush=True)
-                                current_state = STATE_IDLE
+                    if current_is_fist:
+                        fist_frames += 1
+                        open_frames = 0
+                        if fist_frames >= 2: # Faster copy
+                            # While selecting text, a fist triggers COPY
+                            if current_state == STATE_AWAITING_COPY and current_time - last_cp_action_time > cp_cooldown:
+                                if args.extension: print(json.dumps({"action": "copy"}), flush=True)
+                                current_state = STATE_IDLE 
                                 last_cp_action_time = current_time
-                                was_fist_previously = False
-
-                # Undo (OK Sign)
-                if args.undo:
+                            
+                            # A held fist always primes the PASTE
+                            paste_primed = True
+                    elif current_is_open:
+                        if current_state == STATE_AWAITING_PASTE or paste_primed:
+                            open_frames += 1
+                            # Faster paste: only 2 frames
+                            if paste_primed and open_frames >= 2:
+                                if current_time - last_cp_action_time > cp_cooldown:
+                                    if args.extension: print(json.dumps({"action": "paste"}), flush=True)
+                                    last_cp_action_time = current_time
+                                    paste_primed = False
+                                    fist_frames = 0
+                                    open_frames = 0
+                        else:
+                            fist_frames = 0
+                    else:
+                        fist_frames = 0
+                        # Don't reset open_frames here to allow for tracking wobbles
+                
+                # 1.3 UNDO (OK Sign) - Paused if selecting or primed
+                if args.undo and current_state != STATE_AWAITING_COPY and not paste_primed:
                     dist_ti = ((hl[4].x - hl[8].x)**2 + (hl[4].y - hl[8].y)**2)**0.5
                     sz = get_hand_size(hl)
                     if dist_ti < sz * 0.4 and fingers[2:] == [True, True, True]:
@@ -345,9 +372,15 @@ def main():
                                 last_undo_time = current_time
                                 undo_state = UNDO_STATE_IDLE
                     else: undo_state = UNDO_STATE_IDLE
+            else:
+                # No hand landmarks - reset counters
+                fist_frames = 0
+                open_frames = 0
+                if current_time - last_hand_seen_time > 1.0:
+                    paste_primed = False
 
-        # 2. POSE & PUSH
-        if (args.posture or args.push) and pose_landmarker:
+        # 2. POSE & PUSH (Paused if selecting or primed)
+        if (args.posture or args.push) and pose_landmarker and current_state != STATE_AWAITING_COPY and not paste_primed:
             try:
                 pose_results = pose_landmarker.detect(mp_image)
             except: pass
@@ -390,8 +423,8 @@ def main():
                                     elif current_time - confirmation_start_time > CONFIRM_TIMEOUT:
                                         push_state = PUSH_STATE_MONITORING
 
-        # 3. FACE
-        if args.face and face_landmarker:
+        # 3. FACE & TILT (Paused if selecting or primed)
+        if args.face and face_landmarker and current_state != STATE_AWAITING_COPY and not paste_primed:
             try:
                 face_results = face_landmarker.detect(mp_image)
             except: pass
@@ -415,10 +448,50 @@ def main():
                         last_tilt_time = current_time
                         trigger_action("swipe_right" if dy > 0 else "swipe_left", use_extension=args.extension)
 
-        # Visuals
+        # Visual Overlays
+        fps = 1.0 / (time.time() - current_time) if (time.time() - current_time) > 0 else 0
+        cv2.putText(image, f"FPS: {fps:.1f}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+        
+        # Mode/State Overlay
+        y_off = 60
+        if current_state == STATE_AWAITING_COPY:
+            cv2.putText(image, "PAUSED (SELECTING TEXT)", (10, y_off), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+            y_off += 30
+            cv2.putText(image, "FIST TO COPY", (10, y_off), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+            y_off += 30
+        elif paste_primed:
+            cv2.putText(image, "PAUSED (PASTE PRIMED)", (10, y_off), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+            y_off += 30
+            cv2.putText(image, "OPEN HAND -> PASTE", (10, y_off), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+            y_off += 30
+        else:
+            cv2.putText(image, "C/P: READY", (10, y_off), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+            y_off += 30
+        
+        if args.push and current_state != STATE_AWAITING_COPY and not paste_primed:
+            color = (0, 0, 255) if push_state != PUSH_STATE_MONITORING else (0, 255, 0)
+            cv2.putText(image, f"Push: {push_state}", (10, y_off), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+            y_off += 30
+
+        if hand_results and hand_results.hand_landmarks:
+            for hl in hand_results.hand_landmarks:
+                # Calculate Bounding Box
+                x_min, y_min = w, h
+                x_max, y_max = 0, 0
+                for lm in hl:
+                    cx, cy = int(lm.x * w), int(lm.y * h)
+                    x_min, y_min = min(x_min, cx), min(y_min, cy)
+                    x_max, y_max = max(x_max, cx), max(y_max, cy)
+                
+                # Draw Box
+                padding = 20
+                cv2.rectangle(image, (x_min - padding, y_min - padding), (x_max + padding, y_max + padding), (0, 255, 0), 2)
+                cv2.putText(image, "HAND", (x_min - padding, y_min - padding - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+
+        if hand_status != "No Hand":
+            cv2.putText(image, hand_status, (10, h - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 0), 2)
+
         if DEBUG_WINDOW:
-            fps = 1.0 / (time.time() - current_time) if (time.time() - current_time) > 0 else 0
-            cv2.putText(image, f"FPS: {fps:.1f}", (w - 150, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
             cv2.imshow('Kineticode Control Hub', image)
             if cv2.waitKey(1) & 0xFF == ord('q'): break
 
@@ -426,8 +499,10 @@ def main():
         if args.stream and current_time - last_stream_time > (1.0 / STREAM_FPS):
             last_stream_time = current_time
             try:
+                # Add "SIDEBAR" tag so user knows they are seeing the stream
+                cv2.putText(image, "LIVE STREAM", (w - 120, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
                 small = cv2.resize(image, (320, 240))
-                _, buf = cv2.imencode('.jpg', small, [cv2.IMWRITE_JPEG_QUALITY, 70])
+                _, buf = cv2.imencode('.jpg', small, [cv2.IMWRITE_JPEG_QUALITY, 75])
                 print(json.dumps({"frame": base64.b64encode(buf).decode('utf-8')}), flush=True)
             except: pass
 
