@@ -32,6 +32,10 @@
     "contributes": {
         "commands": [
             {
+                "command": "air-gesture.selectMode",
+                "title": "Kineticode: Open Control Menu"
+            },
+            {
                 "command": "air-gesture.stop",
                 "title": "Kineticode: Stop Detection"
             }
@@ -66,6 +70,22 @@
                     "type": "boolean",
                     "default": true,
                     "description": "Show/hide the in-editor camera preview in the Kineticode sidebar."
+                },
+                "airGesture.snapThreshold": {
+                    "type": "number",
+                    "default": 0.05,
+                    "description": "Distance threshold for detecting a pinch (part of the clap gesture)."
+                },
+                "airGesture.pushTrigger": {
+                    "type": "string",
+                    "enum": [
+                        "physical_push",
+                        "clap",
+                        "swipe_left",
+                        "swipe_right"
+                    ],
+                    "default": "physical_push",
+                    "description": "The gesture that triggers a Git Push when in Push Control mode."
                 }
             }
         }

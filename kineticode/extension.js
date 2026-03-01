@@ -38,7 +38,9 @@ function showModePicker(context) {
     }
 
     const items = [
-        { label: "$(hand) Hand Control", description: "Tab navigation via swipes", id: 'hand' },
+        { label: "$(rocket) Dual Control", description: "Hand Gestures + Posture", id: 'dual' },
+        { label: "$(cloud-upload) Git Push Control", description: "Choose a gesture to trigger Git Push", id: 'push' },
+        { label: "$(hand) Hand Control", description: "Zone-based tab navigation", id: 'hand' },
         { label: "$(person) Posture Control", description: "Font scaling via posture", id: 'posture' },
         { label: "$(eye) Face Control", description: "Wink to add a new tab", id: 'face' }
     ];
@@ -48,6 +50,21 @@ function showModePicker(context) {
         canPickMany: true
     }).then(async selections => {
         if (selections && selections.length > 0) {
+            const hasPush = selections.some(s => s.id === 'push');
+            if (hasPush) {
+                const triggers = [
+                    { label: "$(screen-full) Physical Push", description: "Push computer away", id: 'physical_push' },
+                    { label: "$(zap) Clap", description: "Clap hands together", id: 'clap' },
+                    { label: "$(arrow-left) Swipe Left", description: "Move hand to left zone", id: 'swipe_left' },
+                    { label: "$(arrow-right) Swipe Right", description: "Move hand to right zone", id: 'swipe_right' }
+                ];
+                const triggerSelection = await vscode.window.showQuickPick(triggers, { placeHolder: 'Select Trigger Gesture for Git Push' });
+                if (triggerSelection) {
+                    await vscode.workspace.getConfiguration('airGesture').update('pushTrigger', triggerSelection.id, vscode.ConfigurationTarget.Global);
+                } else {
+                    return; // Cancelled
+                }
+            }
             const ready = await checkDependencies();
             if (ready) {
                 const modes = selections.map(s => s.id);
@@ -94,7 +111,13 @@ function startDetection(context, modes) {
     }
 
     activeMode = modes.join(' + ');
-    const scriptPath = path.join(context.extensionPath, 'unified_engine.py');
+
+    // Determine which script to run. If 'push' is included, we use push_engine.py 
+    // for now because unified_engine.py doesn't have the Git logic I built.
+    // If multiple are selected including push, we'll need to decide. 
+    // To keep it simple and preserve features, if 'push' is in modes, we prioritize it.
+    let scriptName = modes.includes('push') ? 'push_engine.py' : 'unified_engine.py';
+    const scriptPath = path.join(context.extensionPath, scriptName);
     const pythonCommand = process.platform === 'win32' ? 'python' : 'python3';
 
     if (modes.includes('posture')) {
@@ -105,10 +128,12 @@ function startDetection(context, modes) {
     const debug = config.get('debugWindow', false);
     const enablePreview = config.get('enablePreview', true);
 
-    const args = [scriptPath, '--extension', '--debug', debug.toString()];
+    const workspacePath = vscode.workspace.workspaceFolders?.[0]?.uri?.fsPath || context.extensionPath;
+
+    const args = [scriptPath, '--extension', '--workspace', workspacePath, '--debug', debug.toString()];
     if (enablePreview) args.push('--stream');
-    if (modes.includes('hand')) args.push('--hands');
-    if (modes.includes('posture')) args.push('--posture');
+    if (modes.includes('hand') || modes.includes('dual')) args.push('--hands');
+    if (modes.includes('posture') || modes.includes('dual')) args.push('--posture');
     if (modes.includes('face')) args.push('--face');
 
     childProcess = spawn(pythonCommand, args, {
@@ -122,27 +147,38 @@ function startDetection(context, modes) {
         lineBuffer = lines.pop();
 
         lines.forEach(line => {
+            if (!line.trim()) return;
             try {
                 const msg = JSON.parse(line.trim());
                 if (msg.status === 'ready') {
                     vscode.window.showInformationMessage('Kineticode Started!');
                 } else if (msg.gesture) {
                     handleGesture(msg.gesture);
+                    // Also handle push specific triggers if not in ready state
+                    if (modes.includes('push')) handlePushTrigger(msg);
                 } else if (msg.posture) {
                     handlePosture(msg.posture);
                 } else if (msg.frame && cameraProvider) {
                     cameraProvider.updateFrame(msg.frame);
+                } else if (msg.action === 'git_push') {
+                    handlePushTrigger(msg);
                 } else if (msg.error) {
                     vscode.window.showErrorMessage(`Kineticode Error: ${msg.error}`);
                     stopDetection();
                 }
             } catch (e) {
-                // console.error("Parse Error:", line);
+                console.log(`Engine Output: ${line}`);
             }
         });
     });
 
-    childProcess.on('close', () => stopDetection());
+    childProcess.on('close', (code) => {
+        console.log(`Engine process exited with code ${code}`);
+        if (code !== 0 && activeMode) {
+            vscode.window.showErrorMessage(`Air Gesture Engine stopped unexpectedly (Code: ${code}). Check if another app is using the camera.`);
+        }
+        stopDetection();
+    });
     updateStatusBar();
 }
 
@@ -183,7 +219,42 @@ function handleGesture(gesture) {
     else if (gesture === 'clap') vscode.commands.executeCommand('workbench.action.files.newUntitledFile');
 }
 
-function handlePosture(state) {
+function handlePushTrigger(message) {
+    if (!message) return;
+
+    const trigger = vscode.workspace.getConfiguration('airGesture').get('pushTrigger', 'physical_push');
+    let triggered = false;
+
+    if (trigger === 'physical_push' && message.action === 'git_push') {
+        if (message.success) {
+            vscode.window.showInformationMessage('🚀 Push Successful: Your code is safe on GitHub!');
+        } else {
+            vscode.window.showErrorMessage('❌ Git Push Failed! Check the Debug Console for details.');
+        }
+        triggered = true;
+    } else if (message.gesture === trigger) {
+        triggered = true;
+    }
+
+    if (triggered && trigger !== 'physical_push') {
+        vscode.window.showInformationMessage('🚀 Gesture Detected: Starting Git Push...', 'Commit & Push').then(selection => {
+            if (selection === 'Commit & Push') {
+                executeGitPush();
+            }
+        });
+    }
+}
+
+async function executeGitPush() {
+    const terminal = vscode.window.terminals.find(t => t.name === "Git Push") || vscode.window.createTerminal("Git Push");
+    terminal.show();
+    terminal.sendText('git add . && git commit -m "Auto-push from Air Gesture" && git push');
+}
+
+async function handlePosture(stateOrMessage) {
+    const state = (typeof stateOrMessage === 'string') ? stateOrMessage : stateOrMessage.posture;
+    if (!state) return;
+
     const config = vscode.workspace.getConfiguration();
     if (state === 'slouch') {
         // Slouching makes font SMALL (penalty/nudge)

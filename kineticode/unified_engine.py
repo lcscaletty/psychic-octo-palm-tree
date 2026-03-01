@@ -48,11 +48,13 @@ def trigger_action(gesture, use_extension=False):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--extension', action='store_true')
-    parser.add_argument('--debug', type=str, choices=['true', 'false'], default='true')
+    parser.add_argument('--debug', type=str, choices=['true', 'false'], default='true', help='Show debug window')
     parser.add_argument('--hands', action='store_true', help='Enable Hand Tracking')
     parser.add_argument('--posture', action='store_true', help='Enable Posture Tracking')
     parser.add_argument('--face', action='store_true', help='Enable Face/Wink Tracking')
     parser.add_argument('--stream', action='store_true', help='Stream base64 frames to stdout')
+    parser.add_argument('--workspace', type=str, default='', help='Target workspace path')
+    parser.add_argument('--snap_threshold', type=float, default=0.05, help='Snap detection threshold')
     args = parser.parse_args()
 
     global DEBUG_WINDOW, hand_landmarker, pose_landmarker, face_landmarker
