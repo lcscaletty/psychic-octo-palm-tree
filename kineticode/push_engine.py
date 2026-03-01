@@ -8,6 +8,7 @@ import sys
 import os
 import argparse
 import subprocess
+import base64
 
 print("--- PUSH ENGINE STARTING ---", flush=True)
 print(f"Python Version: {sys.version}", flush=True)
@@ -100,6 +101,10 @@ def main():
     parser.add_argument('--debug', type=str, choices=['true', 'false'], default='true', help='Show debug window')
     parser.add_argument('--snap_threshold', type=float, default=0.05, help='Snap detection threshold')
     parser.add_argument('--workspace', type=str, default='', help='Target workspace path')
+    parser.add_argument('--stream', action='store_true', help='Stream base64 frames to stdout')
+    parser.add_argument('--hands', action='store_true', help='Ignored (compatibility)')
+    parser.add_argument('--posture', action='store_true', help='Ignored (compatibility)')
+    parser.add_argument('--face', action='store_true', help='Ignored (compatibility)')
     args = parser.parse_args()
 
     global DEBUG_WINDOW
@@ -128,9 +133,12 @@ def main():
     current_state = STATE_MONITORING
     confirmation_start_time = 0
     CONFIRM_TIMEOUT = 10.0 # 10 seconds to confirm
+    
+    last_stream_time = 0
+    STREAM_FPS = 15
 
     if args.extension:
-        print(json.dumps({"status": "push_engine_ready"}), flush=True)
+        print(json.dumps({"status": "ready"}), flush=True)
     else:
         print("--- Push-to-GitHub Engine Active ---")
         print("1. Sit naturally for 2 seconds to calibrate.")
@@ -151,80 +159,105 @@ def main():
         image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
         mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=image_rgb)
         
+
         results = landmarker.detect(mp_image)
+        
+        # Draw skeleton and UI elements
+        display_image = image.copy()
         status_text = "Calibrating..."
         box_color = (255, 100, 0) # Orange
-
+        
         if results.pose_landmarks:
             for pose_landmarks in results.pose_landmarks:
-                # Keypoints: 0(Nose), 2(LE), 5(RE), 15(LW), 16(RW)
+                # 1. Processing and Logic
                 nose_y = pose_landmarks[0].y
                 lw_y = pose_landmarks[15].y
                 rw_y = pose_landmarks[16].y
-                
-                # Distance between eyes is a good proxy for face distance
                 eye_dist = ((pose_landmarks[2].x - pose_landmarks[5].x)**2 + 
                             (pose_landmarks[2].y - pose_landmarks[5].y)**2)**0.5
                 
-                # Calibration phase
                 if time.time() - start_time < WARMUP_TIME:
-                    if neutral_dist is None:
-                        neutral_dist = eye_dist
-                    else:
-                        neutral_dist = 0.1 * eye_dist + 0.9 * neutral_dist
+                    if neutral_dist is None: neutral_dist = eye_dist
+                    else: neutral_dist = 0.1 * eye_dist + 0.9 * neutral_dist
                     status_text = f"Calibrating: {int((time.time()-start_time)/WARMUP_TIME*100)}%"
+                    box_color = (255, 100, 0)
                 else:
-                    # Detection phase
                     ratio = eye_dist / neutral_dist if neutral_dist else 1.0
-                    
                     if current_state == STATE_MONITORING:
                         if ratio < PUSH_THRESHOLD and (time.time() - last_push_time > COOLDOWN):
                             current_state = STATE_AWAITING_CONFIRMATION
                             confirmation_start_time = time.time()
-                            print("Push detected! Awaiting hands-up confirmation...", flush=True)
+                            print(json.dumps({"status": "awaiting_confirmation"}), flush=True)
                         else:
-                            status_text = "Monitoring..."
-                            box_color = (255, 0, 0) # Blue
-                    
+                            status_text = "READY TO PUSH"
+                            box_color = (255, 0, 0)
                     elif current_state == STATE_AWAITING_CONFIRMATION:
-                        # Check for hands up (both wrists above nose)
-                        # Note: y grows downwards, so "above" means y is smaller
                         hands_up = lw_y < nose_y and rw_y < nose_y
-                        
                         elapsed = time.time() - confirmation_start_time
                         if hands_up:
                             status_text = "CONFIRMED! PUSHING..."
-                            box_color = (0, 255, 0) # Green
+                            box_color = (0, 255, 0)
                             success = perform_git_push(WORKSPACE_PATH)
                             last_push_time = time.time()
                             current_state = STATE_MONITORING
-                            if args.extension:
-                                print(json.dumps({"action": "git_push", "success": success, "ratio": ratio}), flush=True)
+                            print(json.dumps({"action": "git_push", "success": success, "ratio": ratio}), flush=True)
                         elif elapsed > CONFIRM_TIMEOUT:
-                            print("Confirmation timed out.", flush=True)
                             current_state = STATE_MONITORING
                         else:
-                            status_text = f"RAISE HANDS! ({int(CONFIRM_TIMEOUT - elapsed)}s)"
-                            box_color = (0, 165, 255) # Bright Orange
+                            status_text = "PUSH DETECTED!"
+                            box_color = (0, 165, 255)
 
-                # Visuals
+                # 2. Drawing Visuals (ALWAYS shown in sidebar)
+                def get_p(idx):
+                    lm = pose_landmarks[idx]
+                    return (int(lm.x * w), int(lm.y * h))
+
+                # Skeleton
+                l_sh, r_sh = get_p(11), get_p(12)
+                l_el, r_el = get_p(13), get_p(14)
+                l_wr, r_wr = get_p(15), get_p(16)
+                for p1, p2 in [(l_sh, r_sh), (l_sh, l_el), (l_el, l_wr), (r_sh, r_el), (r_el, r_wr)]:
+                    cv2.line(display_image, p1, p2, (255, 255, 255), 2)
+                for i in [11, 12, 13, 14, 15, 16]:
+                    cv2.circle(display_image, get_p(i), 5, (0, 255, 0), -1)
+
+                # Status Text
+                cv2.putText(display_image, status_text, (30, 40), cv2.FONT_HERSHEY_DUPLEX, 1.0, box_color, 2)
+                if 'ratio' in locals() and current_state == STATE_MONITORING:
+                    cv2.putText(display_image, f"Distance: {ratio:.2f}", (30, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.6, box_color, 1)
+
+                # Confirmation Overlays
+                if current_state == STATE_AWAITING_CONFIRMATION:
+                    # Flashing border
+                    thickness = 15 if int(time.time() * 5) % 2 == 0 else 5
+                    cv2.rectangle(display_image, (0, 0), (w, h), box_color, thickness)
+                    # Central prompt
+                    cv2.putText(display_image, "RAISE HANDS", (int(w*0.2), int(h*0.5)), 
+                                cv2.FONT_HERSHEY_DUPLEX, 1.4, box_color, 3)
+                    cv2.putText(display_image, "TO CONFIRM GIT PUSH", (int(w*0.1), int(h*0.65)), 
+                                cv2.FONT_HERSHEY_DUPLEX, 0.9, box_color, 2)
+                    # Hand indicators
+                    cv2.circle(display_image, get_p(15), 15, (0, 255, 0) if lw_y < nose_y else (0, 0, 255), 3)
+                    cv2.circle(display_image, get_p(16), 15, (0, 255, 0) if rw_y < nose_y else (0, 0, 255), 3)
+
+                # Legacy debug indicators
                 if DEBUG_WINDOW:
-                    # Draw indicators
-                    p_nose = (int(pose_landmarks[0].x*w), int(pose_landmarks[0].y*h))
-                    p_lw = (int(pose_landmarks[15].x*w), int(pose_landmarks[15].y*h))
-                    p_rw = (int(pose_landmarks[16].x*w), int(pose_landmarks[16].y*h))
-                    
-                    cv2.circle(image, p_nose, 5, (255, 255, 255), -1)
-                    cv2.circle(image, p_lw, 8, box_color, -1)
-                    cv2.circle(image, p_rw, 8, box_color, -1)
-                    
-                    cv2.putText(image, status_text, (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.8, box_color, 2)
-                    cv2.putText(image, f"Dist Ratio: {ratio:.2f}" if 'ratio' in locals() else "Calibrating...", (50, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.6, box_color, 2)
-                    if current_state == STATE_AWAITING_CONFIRMATION:
-                         cv2.rectangle(image, (0,0), (w,h), box_color, 10) # Flash border during confirmation phase
+                    cv2.circle(display_image, get_p(0), 5, (255, 255, 255), -1)
+
+        # Stream to VS Code Webview
+        if args.stream and time.time() - last_stream_time > (1.0 / STREAM_FPS):
+            last_stream_time = time.time()
+            try:
+                # Resize for performance but keep quality decent
+                small_image = cv2.resize(display_image, (320, 240))
+                _, buffer = cv2.imencode('.jpg', small_image, [cv2.IMWRITE_JPEG_QUALITY, 80])
+                jpg_as_text = base64.b64encode(buffer).decode('utf-8')
+                print(json.dumps({"frame": jpg_as_text}), flush=True)
+            except Exception:
+                pass
 
         if DEBUG_WINDOW:
-            cv2.imshow('Push Engine Preview', image)
+            cv2.imshow('Push Engine Preview', display_image)
             if cv2.waitKey(1) & 0xFF == ord('q') or cv2.waitKey(1) & 0xFF == 27: break
 
     cap.release()
