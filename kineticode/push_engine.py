@@ -8,6 +8,7 @@ import sys
 import os
 import argparse
 import subprocess
+import base64
 
 print("--- PUSH ENGINE STARTING ---", flush=True)
 print(f"Python Version: {sys.version}", flush=True)
@@ -100,6 +101,10 @@ def main():
     parser.add_argument('--debug', type=str, choices=['true', 'false'], default='true', help='Show debug window')
     parser.add_argument('--snap_threshold', type=float, default=0.05, help='Snap detection threshold')
     parser.add_argument('--workspace', type=str, default='', help='Target workspace path')
+    parser.add_argument('--stream', action='store_true', help='Stream base64 frames to stdout')
+    parser.add_argument('--hands', action='store_true', help='Ignored (compatibility)')
+    parser.add_argument('--posture', action='store_true', help='Ignored (compatibility)')
+    parser.add_argument('--face', action='store_true', help='Ignored (compatibility)')
     args = parser.parse_args()
 
     global DEBUG_WINDOW
@@ -128,6 +133,9 @@ def main():
     current_state = STATE_MONITORING
     confirmation_start_time = 0
     CONFIRM_TIMEOUT = 10.0 # 10 seconds to confirm
+    
+    last_stream_time = 0
+    STREAM_FPS = 15
 
     if args.extension:
         print(json.dumps({"status": "push_engine_ready"}), flush=True)
@@ -222,6 +230,18 @@ def main():
                     cv2.putText(image, f"Dist Ratio: {ratio:.2f}" if 'ratio' in locals() else "Calibrating...", (50, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.6, box_color, 2)
                     if current_state == STATE_AWAITING_CONFIRMATION:
                          cv2.rectangle(image, (0,0), (w,h), box_color, 10) # Flash border during confirmation phase
+
+        # Stream to VS Code Webview
+        if args.stream and time.time() - last_stream_time > (1.0 / STREAM_FPS):
+            last_stream_time = time.time()
+            try:
+                # Resize for performance
+                small_image = cv2.resize(image, (320, 240))
+                _, buffer = cv2.imencode('.jpg', small_image, [cv2.IMWRITE_JPEG_QUALITY, 70])
+                jpg_as_text = base64.b64encode(buffer).decode('utf-8')
+                print(json.dumps({"frame": jpg_as_text}), flush=True)
+            except Exception:
+                pass
 
         if DEBUG_WINDOW:
             cv2.imshow('Push Engine Preview', image)
