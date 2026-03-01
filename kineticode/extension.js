@@ -1,5 +1,5 @@
 const vscode = require('vscode');
-const { spawn } = require('child_process');
+const { spawn, exec } = require('child_process');
 const path = require('path');
 const fs = require('fs');
 
@@ -48,7 +48,7 @@ function showModePicker(context) {
         { label: "$(hand) Hand Control", description: "Zone-based navigation", id: 'hand' },
         { label: "$(eye) Face Control", description: "Wink detection", id: 'face' },
         { label: "$(files) Copy/Paste Control", description: "Fist/Open detection", id: 'copy_paste' },
-        { label: "$(history) Undo Gesture", description: "OK Sign detection", id: 'undo' }
+        { label: "$(history) Script Trigger", description: "OK Sign detection to run a script", id: 'undo' }
     ];
 
     vscode.window.showQuickPick(items, { canPickMany: true }).then(async selections => {
@@ -64,23 +64,23 @@ function startDetection(context, modes) {
     activeMode = modes.join(' + ');
 
     const scriptPath = path.join(context.extensionPath, 'unified_engine.py');
-    const config = vscode.workspace.getConfiguration('airGesture');
-    const pythonCommand = config.get('pythonPath') || (process.platform === 'win32' ? 'python' : 'python3');
-
-    const debug = config.get('debugWindow', false);
+    const config = vscode.workspace.getConfiguration('kineticode');
+    const pythonPath = config.get('pythonPath') || 'python';
+    const debugWindow = config.get('debugWindow') ? '--debug' : '';
     const enablePreview = config.get('enablePreview', true);
     const workspacePath = vscode.workspace.workspaceFolders?.[0]?.uri?.fsPath || context.extensionPath;
 
-    const args = [scriptPath, '--extension', '--workspace', workspacePath, '--debug', debug.toString()];
+    const args = [scriptPath, '--extension', '--workspace', workspacePath];
+    if (debugWindow) args.push(debugWindow);
     if (enablePreview) args.push('--stream');
-    if (modes.includes('macro') || modes.includes('hand') || modes.includes('copy_paste') || modes.includes('undo')) args.push('--hands');
+    if (modes.includes('macro') || modes.includes('hand') || modes.includes('copy_paste') || modes.includes('undo') || modes.includes('push')) args.push('--hands');
     if (modes.includes('posture') || modes.includes('push')) args.push('--posture');
     if (modes.includes('tilt') || modes.includes('face')) args.push('--face');
     if (modes.includes('copy_paste')) args.push('--copy_paste');
     if (modes.includes('push')) args.push('--push');
     if (modes.includes('undo')) args.push('--undo');
 
-    childProcess = spawn(pythonCommand, args, { cwd: context.extensionPath });
+    childProcess = spawn(pythonPath, args, { cwd: context.extensionPath });
 
     childProcess.stdout.on('data', (data) => {
         const lines = data.toString().split('\n');
@@ -89,12 +89,19 @@ function startDetection(context, modes) {
             if (!trimmed) return;
             try {
                 const msg = JSON.parse(trimmed);
-                if (msg.status === 'ready') vscode.window.showInformationMessage('Kineticode Ready!');
+                if (msg.status === 'ready') {
+                    vscode.window.showInformationMessage('Kineticode Ready!');
+                    if (modes.includes('push')) vscode.window.showInformationMessage('🎯 Push Mode Active: PUSH PALM to start!');
+                }
+                else if (msg.status === 'awaiting_confirmation') vscode.window.showWarningMessage('🚀 Kineticode: Push Detected! Raise BOTH hands to CONFIRM.', { modal: false });
+                else if (msg.error) vscode.window.showErrorMessage(`Kineticode Engine Error: ${msg.error}`);
                 else if (msg.gesture) handleGesture(msg.gesture);
                 else if (msg.action === 'git_push_trigger') handlePushTrigger(msg);
                 else if (msg.action === 'copy') vscode.commands.executeCommand('editor.action.clipboardCopyAction');
                 else if (msg.action === 'paste') vscode.commands.executeCommand('editor.action.clipboardPasteAction');
-                else if (msg.action === 'undo') vscode.commands.executeCommand('undo');
+                else if (msg.status === 'active') {
+                    outputChannel.appendLine(`[DIAG]: Hand Seen: ${msg.hand_seen}, Ratio: ${msg.push_ratio}, State: ${msg.state}`);
+                }
                 else if (msg.frame && cameraProvider) cameraProvider.updateFrame(msg.frame);
             } catch (e) {
                 if (!trimmed.includes('"frame":')) outputChannel.appendLine(`[RAW]: ${trimmed}`);
@@ -118,7 +125,17 @@ function startDetection(context, modes) {
     });
     context.subscriptions.push(selectionListener);
 
-    childProcess.on('close', () => {
+    childProcess.stderr.on('data', (data) => {
+        outputChannel.appendLine(`[ENGINE ERROR]: ${data.toString()}`);
+    });
+
+    childProcess.on('error', (err) => {
+        outputChannel.appendLine(`[SPAWN ERROR]: ${err.message}`);
+        vscode.window.showErrorMessage(`Kineticode: Failed to start engine! ${err.message}`);
+    });
+
+    childProcess.on('close', (code) => {
+        outputChannel.appendLine(`[ENGINE]: Process closed with code ${code}`);
         selectionListener.dispose();
         stopDetection();
     });
@@ -149,22 +166,136 @@ function updateStatusBar() {
 }
 
 function handleGesture(gesture) {
-    if (gesture === 'swipe_left') vscode.commands.executeCommand('workbench.action.previousEditor');
-    else if (gesture === 'swipe_right') vscode.commands.executeCommand('workbench.action.nextEditor');
-    else if (gesture === 'clap') vscode.commands.executeCommand('workbench.action.files.newUntitledFile');
-    else if (gesture === 'gesture_one') vscode.commands.executeCommand('workbench.action.moveEditorToNextGroup');
-    else if (gesture === 'gesture_peace') vscode.commands.executeCommand('workbench.action.splitEditor');
-    else if (gesture === 'gesture_l') vscode.commands.executeCommand('actions.find');
+    // 1. CONSTANT ACTIONS (Head Motions)
+    if (gesture === 'tilt_left') {
+        vscode.commands.executeCommand('workbench.action.previousEditor');
+        return;
+    }
+    if (gesture === 'tilt_right') {
+        vscode.commands.executeCommand('workbench.action.nextEditor');
+        return;
+    }
+    if (gesture === 'wink') {
+        vscode.commands.executeCommand('workbench.action.files.newUntitledFile');
+        return;
+    }
+
+    // 2. CUSTOMIZABLE ACTIONS (Hand Gestures)
+    const config = vscode.workspace.getConfiguration('kineticode');
+    let actionKey = '';
+
+    // Map internal gesture IDs to configuration keys
+    if (gesture === 'gesture_one') actionKey = 'gestureOneAction';
+    else if (gesture === 'gesture_peace') actionKey = 'gesturePeaceAction';
+    else if (gesture === 'gesture_l') actionKey = 'gestureLAction';
+    else if (gesture === 'ok_sign') actionKey = 'okSignAction';
+
+    if (!actionKey) return;
+
+    const action = config.get(actionKey);
+    if (!action) return;
+
+    if (action === 'custom_script') {
+        executeCustomScript();
+    } else {
+        vscode.commands.executeCommand(action).then(
+            () => { /* success */ },
+            (err) => {
+                outputChannel.appendLine(`[GESTURE ERROR]: Failed to execute command '${action}' for gesture '${gesture}': ${err}`);
+                vscode.window.showErrorMessage(`Kineticode: Command '${action}' failed! Check spelling in settings.`);
+            }
+        );
+    }
 }
 
-function handlePushTrigger(message) {
-    let terminal = vscode.window.terminals.find(t => t.name === 'Kineticode Git');
-    if (!terminal) terminal = vscode.window.createTerminal('Kineticode Git');
-    terminal.show();
-    terminal.sendText(`git add .`);
-    terminal.sendText(`git commit -m "Auto-push: ${new Date().toLocaleString()}"`);
-    terminal.sendText(`git push`);
-    vscode.window.showInformationMessage('🚀 Kineticode: Git Push Triggered!');
+async function handlePushTrigger(message) {
+    outputChannel.appendLine('[GIT PUSH]: Triggered via gesture.');
+
+    try {
+        const gitExtension = vscode.extensions.getExtension('vscode.git');
+        if (!gitExtension) throw new Error('VS Code Git extension not found');
+
+        const api = gitExtension.exports.getAPI(1);
+        if (!api || !api.repositories || api.repositories.length === 0) {
+            throw new Error('No Git repository found or API not ready');
+        }
+
+        const repository = api.repositories[0];
+
+        // Stage changes
+        await repository.add(['.']);
+
+        // Robust check for any changes (staged or unstaged)
+        const hasChanges = repository.state.workingTreeChanges.length > 0 ||
+            repository.state.indexChanges.length > 0 ||
+            repository.state.mergeChanges.length > 0;
+
+        if (!hasChanges) {
+            vscode.window.showInformationMessage('Kineticode: Nothing found to push.');
+            return;
+        }
+
+        const commitMsg = `Kineticode Auto-Push: ${new Date().toLocaleString()}`;
+        await repository.commit(commitMsg);
+
+        // Push with error handling
+        try {
+            await repository.push();
+            vscode.window.showInformationMessage('🚀 Kineticode: Git Push Success!');
+        } catch (pushErr) {
+            outputChannel.appendLine(`[PUSH ERROR]: ${pushErr}`);
+            vscode.window.showWarningMessage('Kineticode: Commit successful, but push failed (check your remote).');
+        }
+    } catch (err) {
+        outputChannel.appendLine(`[GIT FATAL ERROR]: ${err.message || err}`);
+        vscode.window.showErrorMessage(`Kineticode: Push Failed! ${err.message || 'Check extension logs.'}`);
+
+        // Terminal Fallback
+        const terminal = vscode.window.terminals.find(t => t.name === 'Kineticode Git') || vscode.window.createTerminal('Kineticode Git');
+        terminal.show();
+        terminal.sendText('git add .');
+        terminal.sendText(`git commit -m "Kineticode Recovery Commit: ${new Date().toLocaleString()}"`);
+        terminal.sendText('git push');
+    }
+}
+
+function executeCustomScript() {
+    const config = vscode.workspace.getConfiguration('kineticode');
+    const scriptPath = config.get('customScriptPath');
+
+    if (!scriptPath) {
+        vscode.window.showWarningMessage('Kineticode: No custom script path set in settings!');
+        return;
+    }
+
+    if (!fs.existsSync(scriptPath)) {
+        vscode.window.showErrorMessage(`Kineticode: Script not found at ${scriptPath}`);
+        return;
+    }
+
+    outputChannel.appendLine(`Kineticode: Executing custom script: ${scriptPath}`);
+
+    // Determine command based on extension
+    let command = scriptPath;
+    if (scriptPath.endsWith('.py')) {
+        const pythonPath = config.get('pythonPath') || (process.platform === 'win32' ? 'python' : 'python3');
+        command = `"${pythonPath}" "${scriptPath}"`;
+    } else {
+        command = `"${scriptPath}"`;
+    }
+
+    exec(command, (error, stdout, stderr) => {
+        if (error) {
+            outputChannel.appendLine(`[SCRIPT ERROR]: ${error.message}`);
+            vscode.window.showErrorMessage(`Kineticode: Script execution failed! Check logs.`);
+            return;
+        }
+        if (stderr) {
+            outputChannel.appendLine(`[SCRIPT STDERR]: ${stderr}`);
+        }
+        outputChannel.appendLine(`[SCRIPT OUTPUT]: ${stdout}`);
+        vscode.window.showInformationMessage('✅ Kineticode: Custom Script Executed!');
+    });
 }
 
 class KineticodeViewProvider {

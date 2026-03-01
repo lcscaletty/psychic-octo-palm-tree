@@ -1,59 +1,38 @@
 {
     "name": "kineticode",
-    "displayName": "Kineticode: Air Gesture Control",
-    "description": "Control VS Code with hand gestures and posture monitoring.",
-    "version": "0.1.5",
-    "publisher": "Kineticode1",
-    "license": "MIT",
-    "qna": false,
-    "repository": {
-        "type": "git",
-        "url": "https://github.com/lcscaletty/psychic-octo-palm-tree"
-    },
-    "icon": "icon.png",
+    "displayName": "Kineticode",
+    "description": "Control VS Code with hand and pose gestures.",
+    "version": "0.1.0",
     "engines": {
-        "vscode": "^1.80.0"
+        "vscode": "^1.85.0"
     },
     "categories": [
-        "Other",
-        "Machine Learning"
+        "Other"
     ],
-    "keywords": [
-        "gesture",
-        "posture",
-        "camera",
-        "mediapipe",
-        "automation"
-    ],
-    "activationEvents": [
-        "*"
-    ],
+    "activationEvents": [],
     "main": "./extension.js",
     "contributes": {
         "commands": [
             {
-                "command": "air-gesture.selectMode",
-                "title": "Kineticode: Open Control Menu"
-            },
-            {
-                "command": "air-gesture.stop",
-                "title": "Kineticode: Stop Detection"
-            },
-            {
-                "command": "air-gesture.showLogs",
-                "title": "Kineticode: Show Debug Logs"
-            },
-            {
-                "command": "air-gesture.diagnostics",
-                "title": "Kineticode: Run Diagnostics"
+                "command": "kineticode.startDetection",
+                "title": "Kineticode: Start Detection"
             }
         ],
+        "menus": {
+            "view/title": [
+                {
+                    "command": "kineticode.startDetection",
+                    "when": "view == kineticode-explorer",
+                    "group": "navigation"
+                }
+            ]
+        },
         "viewsContainers": {
             "activitybar": [
                 {
                     "id": "kineticode-explorer",
                     "title": "Kineticode",
-                    "icon": "icon.png"
+                    "icon": "media/icon.png"
                 }
             ]
         },
@@ -69,47 +48,63 @@
         "configuration": {
             "title": "Kineticode Control",
             "properties": {
-                "airGesture.debugWindow": {
+                "kineticode.debugWindow": {
                     "type": "boolean",
                     "default": false,
                     "description": "Show/hide the legacy OpenCV camera window (appears outside VS Code)."
                 },
-                "airGesture.enablePreview": {
+                "kineticode.enablePreview": {
                     "type": "boolean",
                     "default": true,
                     "description": "Show/hide the in-editor camera preview in the Kineticode sidebar."
                 },
-                "airGesture.snapThreshold": {
-                    "type": "number",
-                    "default": 0.05,
-                    "description": "Distance threshold for detecting a pinch (part of the clap gesture)."
-                },
-                "airGesture.pushTrigger": {
-                    "type": "string",
-                    "enum": [
-                        "physical_push",
-                        "clap",
-                        "swipe_left",
-                        "swipe_right"
-                    ],
-                    "default": "physical_push",
-                    "description": "The gesture that triggers a Git Push when in Push Control mode."
-                },
-                "airGesture.pythonPath": {
+                "kineticode.pythonPath": {
                     "type": "string",
                     "default": "python",
                     "description": "Custom path to the Python executable. Default is 'python' or 'python3'."
+                },
+                "kineticode.customScriptPath": {
+                    "type": "string",
+                    "default": "",
+                    "description": "Path to a script (.py, .sh, .bat) to execute when a gesture is mapped to 'custom_script'."
+                },
+                "kineticode.gestureOneAction": {
+                    "type": "string",
+                    "default": "workbench.action.moveEditorToNextGroup",
+                    "description": "VS Code command or 'custom_script' triggered by the Point gesture (1 finger)."
+                },
+                "kineticode.gesturePeaceAction": {
+                    "type": "string",
+                    "default": "workbench.action.splitEditor",
+                    "description": "VS Code command or 'custom_script' triggered by the Peace gesture (2 fingers)."
+                },
+                "kineticode.gestureLAction": {
+                    "type": "string",
+                    "default": "actions.find",
+                    "description": "VS Code command or 'custom_script' triggered by the L-Shape gesture."
+                },
+                "kineticode.okSignAction": {
+                    "type": "string",
+                    "default": "custom_script",
+                    "description": "VS Code command or 'custom_script' triggered by the OK sign (thumb/index circle)."
                 }
             }
         }
     },
     "scripts": {
-        "compile": "tsc -p ./",
-        "watch": "tsc -watch -p ./"
+        "lint": "eslint .",
+        "pretest": "npm run lint",
+        "test": "node ./test/runTest.js"
     },
     "devDependencies": {
-        "@types/vscode": "^1.80.0",
-        "@types/node": "^16.11.7",
-        "typescript": "^4.5.2"
+        "@types/vscode": "^1.85.0",
+        "@types/glob": "^8.1.0",
+        "@types/mocha": "^10.0.6",
+        "@types/node": "18.x",
+        "eslint": "^8.56.0",
+        "glob": "^10.3.10",
+        "mocha": "^10.2.0",
+        "typescript": "^5.3.3",
+        "@vscode/test-electron": "^2.3.8"
     }
 }

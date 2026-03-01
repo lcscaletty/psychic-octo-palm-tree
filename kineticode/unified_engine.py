@@ -41,10 +41,6 @@ POSE_MODEL = os.path.join(SCRIPT_DIR, 'pose_landmarker.task')
 FACE_MODEL = os.path.join(SCRIPT_DIR, 'face_landmarker.task')
 DEBUG_WINDOW = True 
 
-NEUTRAL_ZONE = (0.35, 0.65)
-LEFT_ZONE = 0.3
-RIGHT_ZONE = 0.7
-AUTO_REPEAT_DELAY = 0.4
 EMA_ALPHA = 0.3
 FACE_EMA_ALPHA = 0.5
 
@@ -68,12 +64,6 @@ def trigger_action(gesture, use_extension=False):
     if use_extension:
         print(json.dumps({"gesture": gesture}), flush=True)
     else:
-        if gesture == "swipe_left":
-            pyautogui.hotkey('ctrl', 'pageup') 
-        elif gesture == "swipe_right":
-            pyautogui.hotkey('ctrl', 'pagedown')
-        elif gesture == "clap":
-            pyautogui.hotkey('ctrl', 'n')
         print(f"Standalone Action: {gesture}")
 
 def get_finger_states(landmarks):
@@ -155,7 +145,7 @@ def is_open(hl):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--extension', action='store_true')
-    parser.add_argument('--debug', type=str, choices=['true', 'false'], default='false', help='Show debug window')
+    parser.add_argument('--debug', action='store_true', help='Show debug window')
     parser.add_argument('--hands', action='store_true', help='Enable Hand Tracking')
     parser.add_argument('--posture', action='store_true', help='Enable Posture Tracking')
     parser.add_argument('--face', action='store_true', help='Enable Face/Wink Tracking')
@@ -168,8 +158,7 @@ def main():
     args = parser.parse_args()
 
     global DEBUG_WINDOW, hand_landmarker, pose_landmarker, face_landmarker, current_state
-    DEBUG_WINDOW = args.debug == 'true'
-
+    DEBUG_WINDOW = args.debug
     # Dependencies
     if args.copy_paste or args.undo: args.hands = True
     if args.push: args.posture = True
@@ -217,8 +206,8 @@ def main():
 
     # States
     neutral_neck_dist = None
-    neutral_shoulder_y = None
     current_posture = "upright"
+    neutral_hand_dist = None
     last_wink_time = 0
     left_blink_ema = 0
     right_blink_ema = 0
@@ -247,13 +236,13 @@ def main():
     push_state = PUSH_STATE_MONITORING
     neutral_dist = None
     smoothed_ratio = None
-    last_push_time = 0
+    PUSH_THRESHOLD = 0.85
+    PUSH_COOLDOWN = 1.5
+    WARMUP_TIME = 1.0
     push_start_time = time.time()
+    last_push_time = time.time() - PUSH_COOLDOWN
     confirmation_start_time = 0
     CONFIRM_TIMEOUT = 10.0
-    PUSH_THRESHOLD = 0.82
-    PUSH_COOLDOWN = 5.0
-    WARMUP_TIME = 2.0
 
     UNDO_STATE_IDLE = "IDLE"
     UNDO_STATE_TOUCH = "TOUCH"
@@ -358,9 +347,9 @@ def main():
                         fist_frames = 0
                         # Don't reset open_frames here to allow for tracking wobbles
                 
-                # 1.3 UNDO (OK Sign) - Paused if selecting or primed
+                # 1.3 SCRIPT TRIGGER (OK Sign) - Paused if selecting or primed
                 if args.undo and current_state != STATE_AWAITING_COPY and not paste_primed:
-                    dist_ti = ((hl[4].x - hl[8].x)**2 + (hl[4].y - hl[8].y)**2)**0.5
+                    dist_ti = get_distance(hl[4], hl[8])
                     sz = get_hand_size(hl)
                     if dist_ti < sz * 0.4 and fingers[2:] == [True, True, True]:
                         if undo_state == UNDO_STATE_IDLE:
@@ -368,16 +357,28 @@ def main():
                             undo_touch_start = current_time
                         elif current_time - undo_touch_start > 0.4:
                             if current_time - last_undo_time > 1.5:
-                                if args.extension: print(json.dumps({"action": "undo"}), flush=True)
+                                if args.extension: print(json.dumps({"gesture": "ok_sign"}), flush=True)
                                 last_undo_time = current_time
                                 undo_state = UNDO_STATE_IDLE
+                                hand_status = "OK SIGN 👌"
                     else: undo_state = UNDO_STATE_IDLE
+
+                # 1.4 Hand tracking diagnostics (Optional)
+                if args.push:
+                    sz = get_hand_size(hl)
+                    # We just use hand tracking for confirmation now
+                    pass
+                    
+                    # Periodic Diagnostic (Every 2 seconds)
+                    # We just use hand tracking for confirmation now
+                    pass
             else:
                 # No hand landmarks - reset counters
                 fist_frames = 0
                 open_frames = 0
                 if current_time - last_hand_seen_time > 1.0:
                     paste_primed = False
+                    push_state = PUSH_STATE_MONITORING # Reset push state if hand lost
 
         # 2. POSE & PUSH (Paused if selecting or primed)
         if (args.posture or args.push) and pose_landmarker and current_state != STATE_AWAITING_COPY and not paste_primed:
@@ -403,25 +404,30 @@ def main():
                             if args.extension: print(json.dumps({"posture": current_posture}), flush=True)
                     
                     if args.push:
-                        if time.time() - last_push_trigger_time > PUSH_LOCKOUT_DURATION:
-                            if time.time() - push_start_time < WARMUP_TIME:
-                                neutral_dist = 0.1 * eye_dist + 0.9 * neutral_dist if neutral_dist else eye_dist
-                            else:
-                                ratio = eye_dist / neutral_dist if neutral_dist else 1.0
-                                smoothed_ratio = 0.4 * ratio + 0.6 * smoothed_ratio if smoothed_ratio else ratio
-                                if push_state == PUSH_STATE_MONITORING:
-                                    if smoothed_ratio < PUSH_THRESHOLD and (current_time - last_push_time > PUSH_COOLDOWN):
-                                        push_state = PUSH_STATE_AWAITING_CONFIRMATION
-                                        confirmation_start_time = current_time
-                                        if args.extension: print(json.dumps({"status": "awaiting_confirmation"}), flush=True)
-                                elif push_state == PUSH_STATE_AWAITING_CONFIRMATION:
-                                    hands_up = (pl[15].y < sy and pl[16].y < sy)
-                                    if hands_up:
-                                        perform_git_push_trigger(args.extension)
-                                        last_push_time = current_time
-                                        push_state = PUSH_STATE_MONITORING
-                                    elif current_time - confirmation_start_time > CONFIRM_TIMEOUT:
-                                        push_state = PUSH_STATE_MONITORING
+                        # Depth Sensing: If you pull away (head gets smaller), trigger push
+                        if current_time - push_start_time < WARMUP_TIME:
+                            neutral_dist = 0.1 * eye_dist + 0.9 * neutral_dist if neutral_dist else eye_dist
+                        else:
+                            ratio = eye_dist / neutral_dist if neutral_dist else 1.0
+                            smoothed_ratio = 0.4 * ratio + 0.6 * smoothed_ratio if smoothed_ratio else ratio
+                            
+                            if push_state == PUSH_STATE_MONITORING:
+                                # Decrease in eye distance means pull away
+                                if smoothed_ratio < 0.85 and (current_time - last_push_time > PUSH_COOLDOWN):
+                                    push_state = PUSH_STATE_AWAITING_CONFIRMATION
+                                    confirmation_start_time = current_time
+                                    if args.extension: print(json.dumps({"status": "awaiting_confirmation"}), flush=True)
+                                    hand_status = f"PULL DETECTED! (Ratio: {smoothed_ratio:.2f}) 🚀"
+                            elif push_state == PUSH_STATE_AWAITING_CONFIRMATION:
+                                # Confirmation: Both wrists must be above shoulders
+                                if pl[15].y < sy and pl[16].y < sy:
+                                    perform_git_push_trigger(args.extension)
+                                    last_push_time = current_time
+                                    push_state = PUSH_STATE_MONITORING
+                                    hand_status = "PUSHED! ✈️"
+                                elif current_time - confirmation_start_time > CONFIRM_TIMEOUT:
+                                    push_state = PUSH_STATE_MONITORING
+
 
         # 3. FACE & TILT (Paused if selecting or primed)
         if args.face and face_landmarker and current_state != STATE_AWAITING_COPY and not paste_primed:
@@ -435,7 +441,7 @@ def main():
                 if abs(left_blink_ema - right_blink_ema) > 0.3 and max(left_blink_ema, right_blink_ema) > 0.4:
                     wink_dwell_counter += 1
                     if wink_dwell_counter >= WINK_DWELL_THRESHOLD and current_time - last_wink_time > 1.2:
-                        trigger_action("clap", use_extension=args.extension)
+                        trigger_action("wink", use_extension=args.extension)
                         last_wink_time = current_time
                 else: wink_dwell_counter = 0
 
@@ -446,7 +452,17 @@ def main():
                     dist = (dx**2 + dy**2)**0.5
                     if dist > 0 and abs(dy/dist) > TILT_RATIO_THRESHOLD:
                         last_tilt_time = current_time
-                        trigger_action("swipe_right" if dy > 0 else "swipe_left", use_extension=args.extension)
+                        trigger_action("tilt_right" if dy > 0 else "tilt_left", use_extension=args.extension)
+
+        # Diagnostic (Every 1.5 seconds)
+        if current_time - last_macro_time > 1.5:
+            diag = {
+                "status": "active",
+                "push_ratio": round(smoothed_ratio, 2) if smoothed_ratio is not None else 1.0,
+                "state": push_state
+            }
+            if args.extension: print(json.dumps(diag), flush=True)
+            last_macro_time = current_time
 
         # Visual Overlays
         fps = 1.0 / (time.time() - current_time) if (time.time() - current_time) > 0 else 0
