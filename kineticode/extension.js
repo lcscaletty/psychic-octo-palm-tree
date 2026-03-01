@@ -37,7 +37,7 @@ function showModePicker(context) {
         return;
     }
     const items = [
-        { label: "$(zap) Macro Control", description: "Finger shapes (V: Move Tab, Rock: Terminal, L: Find)", id: 'macro' },
+        { label: "$(zap) Macro Control", description: "Finger shapes (☝️: Move Tab, ✌️: Split, 🤘: Terminal, L: Find)", id: 'macro' },
         { label: "$(sync) Tilt Navigation", description: "Switch tabs by tilting your head left/right", id: 'tilt' },
         { label: "$(cloud-upload) Git Push Control", description: "Choose a gesture to trigger Git Push", id: 'push' },
         { label: "$(hand) Hand Control", description: "Zone-based tab navigation", id: 'hand' },
@@ -176,6 +176,10 @@ function startDetection(context, modes) {
                             vscode.window.showInformationMessage('Push aborted. Wait for timeout.');
                         }
                     });
+                } else if (msg.status === 'pushing_in_progress') {
+                    vscode.window.showInformationMessage('Hands up detected! 🚀 Initiating Git Push...');
+                } else if (msg.status === 'push_aborted') {
+                    vscode.window.showInformationMessage('Git Push confirmation timed out. Push aborted.');
                 } else if (msg.action === 'git_push') {
                     handlePushTrigger(msg);
                 } else if (msg.action === 'copy') {
@@ -243,7 +247,8 @@ function handleGesture(gesture) {
     else if (gesture === 'clap') vscode.commands.executeCommand('workbench.action.files.newUntitledFile');
 
     // Macro Gestures
-    else if (gesture === 'gesture_peace') vscode.commands.executeCommand('workbench.action.moveEditorToNextGroup');
+    else if (gesture === 'gesture_one') vscode.commands.executeCommand('workbench.action.moveEditorToNextGroup');
+    else if (gesture === 'gesture_peace') vscode.commands.executeCommand('workbench.action.splitEditor');
     else if (gesture === 'gesture_rock') {
         const terminal = vscode.window.terminals[0] || vscode.window.createTerminal();
         terminal.show();

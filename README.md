@@ -10,7 +10,8 @@ Select exactly which features you want to enable via the Kineticode Status Bar m
 
 ### 🤘 Macro Control (Hand Shapes)
 Execute complex editor commands instantly using specific finger shapes. 
-- **Peace Sign (V)** ✌️: Moves the current editor back and forth between split groups (`workbench.action.moveEditorToNextGroup`).
+- **Index Finger (Point Up)** ☝️: Moves the current editor back and forth between split groups (`workbench.action.moveEditorToNextGroup`).
+- **Peace Sign (V)** ✌️: Splits the current editor screen (`workbench.action.splitEditor`).
 - **Rock On** 🤘: Toggles the integrated terminal (`workbench.action.terminal.toggleTerminal`).
 - **L-Shape (Gun)** 🔫: Opens the Find widget to search within the file (`actions.find`).
 

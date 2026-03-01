@@ -12,52 +12,42 @@ import pyautogui
 import base64
 import threading
 
-def perform_git_push(workspace_path, script_dir):
+def perform_git_push_async(workspace_path, script_dir, ratio, is_extension):
     """
-    Executes the git sequence to push current changes to GitHub.
+    Executes the git sequence asynchronously to avoid freezing the camera.
     """
-    print("\n--- ATTEMPTING GIT PUSH ---", flush=True)
-    try:
-        # Use provided workspace path, or default to script dir
-        target_dir = workspace_path if workspace_path else script_dir
-        print(f"Target Directory: {target_dir}", flush=True)
+    def task():
+        print("\n--- ATTEMPTING GIT PUSH ---", flush=True)
+        try:
+            target_dir = workspace_path if workspace_path else script_dir
+            root_res = subprocess.run(["git", "rev-parse", "--show-toplevel"], 
+                                   cwd=target_dir, capture_output=True, text=True, check=True)
+            git_root = root_res.stdout.strip()
+            
+            subprocess.run(["git", "add", "."], cwd=git_root, check=True)
+            
+            status_res = subprocess.run(["git", "status", "--porcelain"], 
+                                     cwd=git_root, capture_output=True, text=True, check=True)
+            if not status_res.stdout.strip():
+                print("--- NOTHING TO COMMIT ---", flush=True)
+            else:
+                commit_msg = f"Auto-push from Kineticode Push Engine: {time.strftime('%Y-%m-%d %H:%M:%S')}"
+                subprocess.run(["git", "commit", "-m", commit_msg], cwd=git_root, check=True)
+            
+            subprocess.run(["git", "push"], cwd=git_root, check=True, timeout=10)
+            print("--- GIT PUSH SUCCESSFUL ---", flush=True)
+            if is_extension:
+                print(json.dumps({"action": "git_push", "success": True, "ratio": ratio}), flush=True)
+        except subprocess.TimeoutExpired:
+            print("--- GIT ERROR: Timeout (May need credentials) ---", flush=True)
+            if is_extension:
+                print(json.dumps({"action": "git_push", "success": False, "ratio": ratio, "error": "Timeout"}), flush=True)
+        except Exception as e:
+            print(f"--- GIT ERROR: {e} ---", flush=True)
+            if is_extension:
+                print(json.dumps({"action": "git_push", "success": False, "ratio": ratio, "error": str(e)}), flush=True)
 
-        # 1. Find git root
-        root_res = subprocess.run(["git", "rev-parse", "--show-toplevel"], 
-                               cwd=target_dir, capture_output=True, text=True, check=True)
-        git_root = root_res.stdout.strip()
-        print(f"Detected Git Root: {git_root}", flush=True)
-        
-        # 2. Add changes
-        print("Running: git add .", flush=True)
-        subprocess.run(["git", "add", "."], cwd=git_root, check=True)
-        
-        # 3. Check status (is there anything to commit?)
-        status_res = subprocess.run(["git", "status", "--porcelain"], 
-                                 cwd=git_root, capture_output=True, text=True, check=True)
-        if not status_res.stdout.strip():
-            print("--- NOTHING TO COMMIT: Skipping push ---", flush=True)
-            return True # Success (nothing needed)
-
-        # 4. Commit
-        commit_msg = f"Auto-push from Kineticode Push Engine: {time.strftime('%Y-%m-%d %H:%M:%S')}"
-        print(f"Running: git commit -m \"{commit_msg}\"", flush=True)
-        subprocess.run(["git", "commit", "-m", commit_msg], cwd=git_root, check=True)
-        
-        # 5. Push
-        print("Running: git push", flush=True)
-        subprocess.run(["git", "push"], cwd=git_root, check=True)
-        
-        print("--- GIT PUSH SUCCESSFUL ---", flush=True)
-        return True
-    except subprocess.CalledProcessError as e:
-        print(f"--- GIT ERROR (code {e.returncode}) ---", flush=True)
-        if e.stdout: print(f"STDOUT: {e.stdout}", flush=True)
-        if e.stderr: print(f"STDERR: {e.stderr}", flush=True)
-        return False
-    except Exception as e:
-        print(f"--- UNEXPECTED ERROR: {e} ---", flush=True)
-        return False
+    threading.Thread(target=task, daemon=True).start()
 
 # --- Configuration ---
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -350,9 +340,11 @@ def main():
                     # states: [thumb, index, middle, ring, pinky]
                     
                     macro = None
-                    if fingers == [False, True, True, False, False]:
+                    if fingers == [False, True, False, False, False]:
+                        macro = "gesture_one"
+                    elif fingers[1:] == [True, True, False, False]:
                         macro = "gesture_peace"
-                    elif fingers == [False, True, False, False, True]:
+                    elif fingers[1:] == [True, False, False, True]:
                         macro = "gesture_rock"
                     elif fingers == [True, True, False, False, False]:
                         macro = "gesture_l"
@@ -466,17 +458,19 @@ def main():
                                             print(json.dumps({"status": "awaiting_confirmation"}), flush=True)
                                 
                                 elif push_state == PUSH_STATE_AWAITING_CONFIRMATION:
-                                    # For Y axis, smaller is higher up. Hands higher than nose = <
-                                    hands_up = lw_y < nose_y and rw_y < nose_y
+                                    # For Y axis, smaller is higher up. Hands higher than shoulders = <
+                                    hands_up = lw_y < sy and rw_y < sy
                                     elapsed = time.time() - confirmation_start_time
                                     
                                     if hands_up:
-                                        success = perform_git_push(args.workspace, SCRIPT_DIR)
+                                        if args.extension:
+                                            print(json.dumps({"status": "pushing_in_progress"}), flush=True)
+                                        perform_git_push_async(args.workspace, SCRIPT_DIR, ratio, args.extension)
                                         last_push_time = time.time()
                                         push_state = PUSH_STATE_MONITORING
-                                        if args.extension:
-                                            print(json.dumps({"action": "git_push", "success": success, "ratio": ratio}), flush=True)
                                     elif elapsed > CONFIRM_TIMEOUT:
+                                        if args.extension:
+                                            print(json.dumps({"status": "push_aborted"}), flush=True)
                                         push_state = PUSH_STATE_MONITORING
                 except Exception as e:
                     print(json.dumps({"error": f"Pose Engine Crash: {str(e)}"}), flush=True)

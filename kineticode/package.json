@@ -2,7 +2,7 @@
     "name": "kineticode",
     "displayName": "Kineticode: Air Gesture Control",
     "description": "Control VS Code with hand gestures and posture monitoring.",
-    "version": "0.1.2",
+    "version": "0.1.3",
     "publisher": "Kineticode1",
     "license": "MIT",
     "qna": false,
