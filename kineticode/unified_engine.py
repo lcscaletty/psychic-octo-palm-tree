@@ -220,31 +220,42 @@ def main():
         )
         face_landmarker = vision.FaceLandmarker.create_from_options(face_options)
 
-    # Try with CAP_DSHOW first, fallback to default
-    cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
-    if not cap.isOpened() or cap.read()[0] == False:
-        cap.release()
-        
+    with open('camera_debug_log.txt', 'w') as log_file:
+        log_file.write("Starting camera initialization...\n")
         cap = None
         for cam_idx in range(5):
+            log_file.write(f"Testing index {cam_idx} with DSHOW...\n")
             test_cap = cv2.VideoCapture(cam_idx, cv2.CAP_DSHOW)
             if test_cap.isOpened():
+                log_file.write(f"  Opened {cam_idx} successfully.\n")
                 valid = False
-                for _ in range(10):
+                for j in range(20): # Increased from 10 to 20 for safety
                     success, img = test_cap.read()
-                    if success and img is not None and img.max() > 10:
-                        valid = True
-                        break
+                    if success and img is not None:
+                        max_val = img.max()
+                        log_file.write(f"    Frame {j}: max_val={max_val}\n")
+                        if max_val > 15:
+                            valid = True
+                            log_file.write(f"  -> Valid camera found at exactly index {cam_idx}\n")
+                            break
                     time.sleep(0.1)
+                
                 if valid:
                     cap = test_cap
+                    log_file.write(f"Successfully selected {cam_idx}\n")
                     break
+                else:
+                    log_file.write(f"  Camera {cam_idx} frames were black.\n")
                 test_cap.release()
-            
-    if cap is None:
-        test_cap = cv2.VideoCapture(0)
-        if test_cap.isOpened():
-            cap = test_cap
+            else:
+                log_file.write(f"  Failed to open {cam_idx}\n")
+                
+        if cap is None:
+            log_file.write("DSHOW failed. Falling back to default ANY...\n")
+            test_cap = cv2.VideoCapture(0)
+            if test_cap.isOpened():
+                cap = test_cap
+                log_file.write("Default ANY opened successfully.\n")
     
     if not cap.isOpened():
         print(json.dumps({"error": "Webcam not found or busy"}), flush=True)
