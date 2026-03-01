@@ -160,11 +160,13 @@ function startDetection(context, modes) {
     let lineBuffer = '';
     childProcess.stdout.on('data', (data) => {
         lineBuffer += data.toString();
-        const lines = lineBuffer.split('\n');
-        lineBuffer = lines.pop();
+        let newlineIndex;
+        while ((newlineIndex = lineBuffer.indexOf('\n')) !== -1) {
+            const line = lineBuffer.slice(0, newlineIndex);
+            lineBuffer = lineBuffer.slice(newlineIndex + 1);
 
-        lines.forEach(line => {
-            if (!line.trim()) return;
+            if (!line.trim()) continue;
+
             try {
                 const msg = JSON.parse(line.trim());
                 if (msg.status === 'ready') {
@@ -198,9 +200,10 @@ function startDetection(context, modes) {
                     stopDetection();
                 }
             } catch (e) {
-                console.log(`Engine Output: ${line}`);
+                // If it fails to parse, the line might be corrupted or severely truncated. Ignore gracefully.
+                console.error(`Failed to parse line (length ${line.length}):`, e.message);
             }
-        });
+        }
     });
 
     childProcess.on('close', (code) => {
