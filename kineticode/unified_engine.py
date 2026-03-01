@@ -203,6 +203,12 @@ def main():
     if args.extension:
         print(json.dumps({"status": "ready"}), flush=True)
 
+    # Force dependencies
+    if args.undo or args.copy_paste:
+        args.hands = True
+    if args.push:
+        args.posture = True
+
     # Lazy Initialization based on flags
     if args.hands:
         base_hand = python.BaseOptions(model_asset_path=HAND_MODEL)
@@ -267,11 +273,6 @@ def main():
         if face_landmarker: face_landmarker.close()
         return
 
-    # Warmup and flush
-    for _ in range(15):
-        cap.grab() # grab() is faster than read() for flushing
-    time.sleep(1.0)
-    
     # Hand State
     can_trigger = True
     last_event_time = 0
@@ -330,7 +331,13 @@ def main():
     last_undo_time = 0
     undo_touch_start = 0
 
+    import os
+    loop_log = open('loop_debug.txt', 'w')
+    loop_log.write("Entered main loop.\n")
+    loop_log.flush()
+
     consecutive_failures = 0
+    frame_count = 0
     while cap.isOpened() and not shutdown_flag:
         success, image = cap.read()
         if not success:
@@ -340,6 +347,11 @@ def main():
                 break
             continue
         consecutive_failures = 0
+        
+        frame_count += 1
+        if frame_count % 10 == 0:
+            loop_log.write(f"Grabbed frame {frame_count}, max_val={image.max()}\n")
+            loop_log.flush()
         
         # Check if the camera is returning pure black frames (privacy shutter closed or virtual cam active)
         is_blank = image.max() < 15
@@ -360,6 +372,11 @@ def main():
         hand_box_color = (128, 128, 128)
         posture_status = "Analyzing..."
         pose_color = (255, 0, 0)
+        
+        hand_results = None
+        pose_results = None
+        face_results = None
+        
         if args.hands and hand_landmarker:
             hand_results = hand_landmarker.detect(mp_image)
             if hand_results.hand_landmarks:

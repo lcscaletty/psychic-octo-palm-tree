@@ -1,6 +1,6 @@
 Starting camera initialization...
 Testing index 0 with DSHOW...
   Opened 0 successfully.
-    Frame 0: max_val=255
+    Frame 0: max_val=245
   -> Valid camera found at exactly index 0
 Successfully selected 0
