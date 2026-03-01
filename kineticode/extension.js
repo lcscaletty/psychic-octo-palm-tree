@@ -36,13 +36,13 @@ function showModePicker(context) {
         stopDetection();
         return;
     }
-
     const items = [
-        { label: "$(rocket) Dual Control", description: "Hand Gestures + Posture", id: 'dual' },
+        { label: "$(zap) Macro Control", description: "Finger shapes (V: Move Tab, Rock: Terminal, L: Find)", id: 'macro' },
+        { label: "$(sync) Tilt Navigation", description: "Switch tabs by tilting your head left/right", id: 'tilt' },
         { label: "$(cloud-upload) Git Push Control", description: "Choose a gesture to trigger Git Push", id: 'push' },
         { label: "$(hand) Hand Control", description: "Zone-based tab navigation", id: 'hand' },
-        { label: "$(person) Posture Control", description: "Font scaling via posture", id: 'posture' },
-        { label: "$(eye) Face Control", description: "Wink to add a new tab", id: 'face' },
+        { label: "$(person) Posture Control", description: "Scale font size based on your posture", id: 'posture' },
+        { label: "$(eye) Face Control", description: "Wink to open a new tab", id: 'face' },
         { label: "$(files) Copy/Paste Control", description: "Fist to copy, Open hand to paste", id: 'copy_paste' }
     ];
 
@@ -123,9 +123,11 @@ function startDetection(context, modes) {
 
     const args = [scriptPath, '--extension', '--workspace', workspacePath, '--debug', debug.toString()];
     if (enablePreview) args.push('--stream');
-    if (modes.includes('hand') || modes.includes('dual')) args.push('--hands');
-    if (modes.includes('posture') || modes.includes('dual')) args.push('--posture');
-    if (modes.includes('face')) args.push('--face');
+
+    // Enable relevant engines based on selected modes
+    if (modes.includes('macro') || modes.includes('hand') || modes.includes('copy_paste')) args.push('--hands');
+    if (modes.includes('posture')) args.push('--posture');
+    if (modes.includes('tilt') || modes.includes('face')) args.push('--face');
 
     childProcess = spawn(pythonCommand, args, {
         cwd: context.extensionPath
@@ -239,6 +241,14 @@ function handleGesture(gesture) {
     if (gesture === 'swipe_left') vscode.commands.executeCommand('workbench.action.previousEditor');
     else if (gesture === 'swipe_right') vscode.commands.executeCommand('workbench.action.nextEditor');
     else if (gesture === 'clap') vscode.commands.executeCommand('workbench.action.files.newUntitledFile');
+
+    // Macro Gestures
+    else if (gesture === 'gesture_peace') vscode.commands.executeCommand('workbench.action.moveEditorToNextGroup');
+    else if (gesture === 'gesture_rock') {
+        const terminal = vscode.window.terminals[0] || vscode.window.createTerminal();
+        terminal.show();
+    }
+    else if (gesture === 'gesture_l') vscode.commands.executeCommand('actions.find');
 }
 
 function handlePushTrigger(message) {
