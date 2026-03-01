@@ -168,6 +168,8 @@ function startDetection(context, modes) {
                 const msg = JSON.parse(line.trim());
                 if (msg.status === 'ready') {
                     vscode.window.showInformationMessage('Kineticode Started!');
+                } else if (msg.gesture) {
+                    handleGesture(msg.gesture);
                 } else if (msg.status === 'awaiting_confirmation') {
                     vscode.window.showInformationMessage('Push Detected! Confirm by raising both hands.', 'Cancel Push').then(selection => {
                         if (selection === 'Cancel Push') {
